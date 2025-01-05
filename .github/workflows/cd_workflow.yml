@@ -1,0 +1,47 @@
+name: CD / Publish release
+on:
+  release:
+    types: [published]
+
+jobs:
+  deploy:
+    name: Publish release
+    environment: hex.pm
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Display build environment
+        run: printenv
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: deploy-deps-cache-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            deploy-deps-cache-
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: 27.x
+          elixir-version: 1.18.x
+      - name: Install dependencies
+        run: mix do local.hex --force, local.rebar --force, deps.get
+
+      - name: Compile code
+        run: mix compile
+      - name: Replace versions with GitHub tag
+        run: |
+          export NON_PREFIXED_VERSION="$(echo -n "$GITHUB_REF_NAME" | sed 's@v@@')"
+          sed -i "s@~s(main)@~s($GITHUB_REF_NAME)@" mix.exs
+          sed -i "s@0.0.0+development@$NON_PREFIXED_VERSION@" mix.exs
+          sed -i "s@~> 0.0.1@~> $NON_PREFIXED_VERSION@" README.md
+      - name: Create docs
+        run: mix docs
+      - name: Publish release
+        run: mix hex.publish --yes
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}

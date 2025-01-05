@@ -1,0 +1,7 @@
+{
+  "search.exclude": {
+    "deps/**": true,
+    "_build/**": true
+  },
+  "window.zoomLevel": 0
+}

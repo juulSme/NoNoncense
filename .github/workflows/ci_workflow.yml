@@ -1,0 +1,59 @@
+name: CI / Automated testing
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Elixir ${{ matrix.elixir }} OTP ${{ matrix.otp }}
+    env:
+      MIX_ENV: test
+
+    strategy:
+      # https://hexdocs.pm/elixir/1.18/compatibility-and-deprecations.html#compatibility-between-elixir-and-erlang-otp
+      matrix:
+        elixir: [1.14.x, 1.18.x]
+        otp: [25.x, 27.x]
+        exclude:
+          - elixir: 1.14.x
+            otp: 27.x
+          - elixir: 1.18.x
+            otp: 25.x
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        id: setup-beam
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+      - name: Cache deps
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: cache-v4-${{steps.setup-beam.outputs.elixir-version}}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            cache-v4-${{steps.setup-beam.outputs.elixir-version}}-
+      - name: Install dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mix deps.get
+      - name: Check code formatting
+        if: matrix.elixir == '1.18.x'
+        run: mix format --check-formatted
+      - name: Compile dependencies
+        run: mix deps.compile
+      - name: Compile code (warnings as errors)
+        run: mix compile --warnings-as-errors
+      - name: Run tests
+        run: mix test
+      - name: Create docs
+        if: matrix.elixir == '1.18.x'
+        run: mix docs

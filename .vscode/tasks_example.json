@@ -1,0 +1,57 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "IEx",
+      "type": "shell",
+      "command": "iex --name node1@127.0.0.1 --cookie secret -S mix",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Test",
+      "type": "shell",
+      "command": "mix test",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Test watch",
+      "type": "shell",
+      "command": "mix test.watch",
+      "group": "test"
+    },
+    {
+      "label": "Install dependencies",
+      "type": "shell",
+      "command": "mix do local.hex --force, local.rebar --force, deps.get"
+    },
+    {
+      "label": "Update dependencies",
+      "type": "shell",
+      "command": "mix deps.update --all"
+    },
+    {
+      "label": "Test file",
+      "type": "shell",
+      "command": "mix test ${relativeFile}",
+      "group": "test",
+      "runOptions": {
+        "reevaluateOnRerun": false
+      }
+    },
+    {
+      "label": "Test line",
+      "type": "shell",
+      "command": "mix test ${relativeFile}:${lineNumber}",
+      "group": "test",
+      "runOptions": {
+        "reevaluateOnRerun": false
+      }
+    }
+  ]
+}

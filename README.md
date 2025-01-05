@@ -10,7 +10,7 @@ by adding `no_noncense` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:no_noncense, "~> 0.1.0"}
+    {:no_noncense, "~> 0.0.1"}
   ]
 end
 ```
@@ -18,4 +18,3 @@ end
 Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
 and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
 be found at <https://hexdocs.pm/no_noncense>.
-
