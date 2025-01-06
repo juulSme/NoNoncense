@@ -54,6 +54,8 @@ jobs:
         run: mix compile --warnings-as-errors
       - name: Run tests
         run: mix test
+      - name: Node shutdown on machine ID conflict test
+        run: ./test/test_conflict_guard.sh
       - name: Create docs
         if: matrix.elixir == '1.18.x'
         run: mix docs
