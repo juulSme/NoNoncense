@@ -66,7 +66,7 @@ defmodule NoNoncense do
   >
   > A plain nonce's timestamp bits will leak the node initialization time, the machine ID, and the counter, and - with improbably high-rate 64-bit nonces - the nonce generation timestamp. If that is not acceptable, use `encrypted_nonce/2` instead of the plain nonce functions.
 
-  ## Encrypted / obfuscated nonces
+  ## Encrypted nonces
 
   By encrypting a nonce, the timestamp, machine ID and message ordering information leak can be prevented. However, we wish to encrypt in a way that **maintains the uniqueness guarantee** of the plain input nonce. So 2^64 unique inputs should generate 2^64 unique outputs, same for the other sizes.
 
@@ -74,23 +74,25 @@ defmodule NoNoncense do
 
   > Counters and LFSRs are both acceptable ways of generating unique nonces, as is encrypting a counter using a block cipher with a 64-bit block size such as DES. Note that it is not acceptable to use a truncation of a counter encrypted with block ciphers with 128-bit or 256-bit blocks, because such a truncation may repeat after a short time.
 
-  There are some interesting things to unpick there. Why can't we use higher ciphers with a larger block size? As it turns out, block ciphers only generate unique outputs for inputs of at least their block size (128 bits for most modern ciphers, notably AES). For example, encrypting a 64-bit nonce with AES would produce a unique 128-bit ciphertext, but that ciphertext can't be reduced back to 64 bits without losing the uniqueness property. Sadly, this also holds for the streaming modes of these ciphers, which still use blocks internally to generate the keystream. That means, on the bright side:
+  There are some interesting things to unpick there. Why can't we use higher ciphers with a larger block size? As it turns out, block ciphers only generate unique outputs for inputs of at least their block size (128 bits for most modern ciphers, notably AES). For example, encrypting a 64-bit nonce with AES would produce a unique 128-bit ciphertext, but that ciphertext can't be reduced back to 64 bits without losing the uniqueness property. Sadly, this also holds for the streaming modes of these ciphers, which still use blocks internally to generate the keystream. That means we can just use AES256 ECB (we only encrypt one block) for 128-bit nonces.
 
   > #### 128-bit encrypted nonces {: .tip}
   >
   > We have "perfect" AES256-encrypted 128-bit nonces, each one unique and indistinguishable from random nonces, with no information leakage.
 
-  However, for 64-bit nonces we are limited to block ciphers with 64-bit block sizes. There are only a few of those in OTP's `m::crypto` module, namely DES, 3DES, and BlowFish. DES is broken and can merely be considered obfuscation at this point, despite the IETF quote (from 2018). 3DES is less broken but that seems like a matter of time. BlowFish performs atrociously in the OTP implementation (~30 times worse than AES, dropping from ~1.8M ops/s to 60K ops/s) to the point where it can realistically form a bottleneck. To pick a poison, 3DES seems like the least worst.
+  However, for 64-bit nonces we are limited to block ciphers with 64-bit block sizes. There are only a few of those in OTP's `m::crypto` module, namely DES, 3DES, and BlowFish. DES is broken and can merely be considered obfuscation at this point, despite the IETF quote (from 2018). BlowFish performs atrociously in the OTP implementation (~30 times worse than AES, dropping from ~1.8M ops/s to 60K ops/s) to the point where it can realistically form a bottleneck. 3DES seems like the least worst option, and practical attacks on it are mainly aimed at block collisions (within a message) which doesn't apply here. Still, it's old.
 
-  For 96-bit nonces there are no block ciphers whatsoever to choose from. The best we can do while maintaining uniqueness is use a 64-bit cipher for the first 64 bits (hiding the timestamp) but leave the remaining 32 bits of the counter unencrypted and leaking info.
+  > #### 64-bit encrypted nonces {: .info}
+  >
+  > We have 3DES-encrypted 64-bit nonces, which is probably good enough.
+
+  For 96-bit nonces there are no block ciphers whatsoever to choose from. The best we can do while maintaining uniqueness is use a 64-bit cipher for the first 64 bits (hiding the timestamp) but leave the remaining 32 bits of the counter unencrypted and leaking info on message ordering.
 
   There is an alternative. Ciphers that use 96-bit IVs (ChaCha20, GCM-mode block cipher) pre- or postfix an all-zero block counter. That means we can use a 64-bit encrypted nonce with an all-zero 64-bit counter (for example, for ChaCha20, prefix 64 zero bits to a 64-bit nonce). That way, at least the _message_ counter part of the nonce is encrypted (and the block counter is not part of the nonce that is attached to the message).
 
-  > #### 64/96-bit encrypted nonces {: .error}
+  > #### 96-bit encrypted nonces {: .warning}
   >
-  > If you really can't tolerate **any** information leakage through the nonce, you should not use encrypted nonces of 64 or 96 bits because they can't be encrypted securely. They should be considered as merely obfuscated.
-
-  Naturally, if you _can_ tolerate that information leaking, you might as well use plain unencrypted nonces.
+  > If you really can't tolerate **any** information leakage through the nonce, you should not use encrypted nonces of 96 bits because the last 32 counter bits can't be encrypted. Consider using 64-bit nonces with a larger block counter complement instead.
   """
   require Logger
 

@@ -18,7 +18,7 @@ defmodule Benchmark do
         1..per_task |> Stream.each(fun) |> Stream.run()
       end)
     end)
-    |> Task.await_many(60000)
+    |> Task.await_many(:infinity)
 
     stop = System.monotonic_time(:nanosecond)
     calc_rate(count, start, stop)
