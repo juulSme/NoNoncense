@@ -37,8 +37,7 @@ defmodule NoNoncense.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:ex_doc, "~> 0.36", only: [:dev, :test], runtime: false},
-      {:benchee, "~> 1.0", only: [:dev], runtime: false}
+      {:ex_doc, "~> 0.36", only: [:dev, :test], runtime: false}
     ]
   end
 end

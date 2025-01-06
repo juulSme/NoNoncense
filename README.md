@@ -105,4 +105,27 @@ Naturally, if you _can_ tolerate that information leaking, you might as well use
 
 ## Benchmarks
 
+```
+On Debian Bookworm, AMD 9700X (8C 16T), 32GB, 990 Pro, generating 100M nonces
+
+NoNonce.nonce(64) single                   22_306_381 ops/s
+NoNonce.nonce(96) single                   40_686_097 ops/s
+NoNonce.nonce(128) single                  41_549_756 ops/s
+NoNonce.encrypted_nonce(64) single          1_205_063 ops/s
+NoNonce.encrypted_nonce(96) single          1_140_176 ops/s
+NoNonce.encrypted_nonce(128) single         2_421_775 ops/s
+:crypto.strong_rand_bytes(8) single         2_650_561 ops/s
+:crypto.strong_rand_bytes(12) single        2_660_745 ops/s
+:crypto.strong_rand_bytes(126) single       2_654_720 ops/s
+NoNonce.nonce(64) multi                    39_031_122 ops/s
+NoNonce.nonce(96) multi                    38_306_529 ops/s
+NoNonce.nonce(128) multi                   39_012_560 ops/s
+NoNonce.encrypted_nonce(64) multi          10_033_706 ops/s
+NoNonce.encrypted_nonce(96) multi           9_584_873 ops/s
+NoNonce.encrypted_nonce(128) multi         13_515_584 ops/s
+:crypto.strong_rand_bytes(8) multi          4_751_390 ops/s
+:crypto.strong_rand_bytes(12) multi         4_766_312 ops/s
+:crypto.strong_rand_bytes(126) multi        4_749_853 ops/s
+```
+
 Note that parallellization can improve the plain nonce generation rate by something like 25%, but not much more (it can also get worse because of contention for the base counter). However, the encrypted nonce rate scales quite well with cores, up to the bottleneck formed by the plain rate.
