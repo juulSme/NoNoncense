@@ -28,21 +28,26 @@ defmodule NoNoncense.MachineId do
 
       # provide a list of possible node identifiers
       iex> node_list = ["1.1.1.1", "127.0.0.1", "8.8.8.8", "0.0.0.0"]
-      iex> MachineId.id(node_list: node_list)
+      iex> MachineId.id!(node_list: node_list)
       2
 
       # a statically configured ID will override the node list
       iex> node_list = ["1.1.1.1", "127.0.0.1", "8.8.8.8", "0.0.0.0"]
-      iex> MachineId.id(machine_id: 1, node_list: node_list)
+      iex> MachineId.id!(machine_id: 1, node_list: node_list)
       1
 
       # the node ID must be within the provided range (default 0-1023)
       iex> node_list = ["1.1.1.1", "127.0.0.1", "8.8.8.8", "0.0.0.0"]
-      iex> MachineId.id(max_nodes: 2, node_list: node_list)
+      iex> MachineId.id!(max_nodes: 2, node_list: node_list)
       ** (RuntimeError) Node ID 2 out of range 0-1
+
+      # raises when the machine ID could not be determined from the node list
+      iex> node_list = ["1.1.1.1"]
+      iex> MachineId.id!(node_list: node_list)
+      ** (RuntimeError) machine ID could not be determined
   """
-  @spec id(id_opts()) :: non_neg_integer()
-  def id(opts \\ []), do: Enum.into(opts, @defaults) |> gen_machine_id()
+  @spec id!(id_opts()) :: non_neg_integer()
+  def id!(opts \\ []), do: Enum.into(opts, @defaults) |> gen_machine_id()
 
   @doc """
   Get a list of all identifiers of the current node. You can use one or more of these values to populate your node list.
@@ -73,7 +78,7 @@ defmodule NoNoncense.MachineId do
         gen_machine_id(%{config | machine_id: id})
 
       _ ->
-        raise "machine ID could not be determined, possible identifiers: #{inspect(host_identifiers)}"
+        raise RuntimeError, "machine ID could not be determined"
     end
   end
 
