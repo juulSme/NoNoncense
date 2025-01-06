@@ -1,6 +1,6 @@
 defmodule NoNoncense.MachineId.ConflictGuard do
   @moduledoc """
-  Guards against machine ID conflicts between nodes. If a new node joins the cluster with the same ID, it is sent the machine IDs of all existing nodes, will become aware of the ID conflict and will call the `on_conflict` callback that can take action to prevent bad stuff from happening (for example, that the uniqueness guarantee of `NoNoncense.NonceFactory` will no longer hold).
+  Guards against machine ID conflicts between nodes. If a new node joins the cluster with the same ID, it is sent the machine IDs of all existing nodes, will become aware of the ID conflict and will call the `on_conflict` callback that can take action to prevent bad stuff from happening (for example, that the uniqueness guarantee of `NoNoncense` will no longer hold).
 
   By default, the `on_conflict` callback emergeny shuts down the entire node using `:erlang.halt/1` with status code 111.
 
