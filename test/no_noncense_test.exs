@@ -52,7 +52,8 @@ defmodule NoNoncenseTest do
     end
 
     test "warns on imminent timestamp overflow" do
-      long_ago = System.system_time(:millisecond) - Integer.pow(2, 42) + 2 * 24 * 60 * 60 * 1000
+      long_ago =
+        System.system_time(:millisecond) - Integer.pow(2, 42) + 1 * 24 * 60 * 60 * 1000 + 60_000
 
       {_, msg} =
         with_log(fn ->
