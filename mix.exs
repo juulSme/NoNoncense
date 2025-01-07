@@ -21,7 +21,7 @@ defmodule NoNoncense.MixProject do
       docs: [
         source_ref: ~s(main),
         extras: ~w(./README.md ./LICENSE.md),
-        main: "readme",
+        main: "NoNoncense",
         skip_undefined_reference_warnings_on: ~w()
       ]
     ]
