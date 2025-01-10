@@ -1,14 +1,16 @@
 defmodule Benchmark do
-  def bench(fun, tasks \\ System.schedulers_online(), count \\ 10_000_000)
+  def bench(fun, tasks \\ System.schedulers_online(), count \\ 10_000_000) do
+    fn _ -> fun.() end |> do_bench(tasks, count)
+  end
 
-  def bench(fun, 1, count) do
+  defp do_bench(fun, 1, count) do
     start = System.monotonic_time(:nanosecond)
     1..count |> Stream.each(fun) |> Stream.run()
     stop = System.monotonic_time(:nanosecond)
     calc_rate(count, start, stop)
   end
 
-  def bench(fun, tasks, count) do
+  defp do_bench(fun, tasks, count) do
     per_task = div(count, tasks)
     start = System.monotonic_time(:nanosecond)
 
@@ -24,6 +26,27 @@ defmodule Benchmark do
     calc_rate(count, start, stop)
   end
 
+  def bench_many(pairs) do
+    Enum.map(pairs, fn {name, bench_args} ->
+      IO.write("Running #{name}... ")
+      {name, apply(__MODULE__, :bench, bench_args)} |> tap(fn _ -> IO.puts("done.") end)
+    end)
+    |> tap(fn _ -> IO.puts("") end)
+  end
+
+  def format_results(results) do
+    name_length = Enum.reduce(results, 0, fn {name, _}, acc -> max(acc, String.length(name)) end)
+    res_length = Enum.reduce(results, 0, fn {_, res}, acc -> max(acc, String.length(res)) end)
+
+    results
+    |> Enum.map(fn {name, result} ->
+      {String.pad_trailing(name <> ":", name_length + 1), String.pad_leading(result, res_length)}
+    end)
+    |> Enum.sort_by(&elem(&1, 1), :desc)
+    |> Enum.map(fn {name, result} -> "#{name} #{result}" end)
+    |> Enum.join("\n")
+  end
+
   defp calc_rate(count, start, stop) do
     duration = stop - start
 
@@ -36,7 +59,6 @@ defmodule Benchmark do
     |> List.flatten()
     |> Enum.reverse()
     |> List.to_string()
-    |> String.pad_leading(15)
   end
 end
 
@@ -47,43 +69,36 @@ key192 = :crypto.strong_rand_bytes(24)
 IO.puts("Sleeping for 10 seconds to allow some timestamp space to build")
 Process.sleep(10000)
 
-rand64 = Benchmark.bench(fn _ -> :crypto.strong_rand_bytes(8) end, 1)
-rand64_m = Benchmark.bench(fn _ -> :crypto.strong_rand_bytes(8) end)
-rand96 = Benchmark.bench(fn _ -> :crypto.strong_rand_bytes(12) end, 1)
-rand96_m = Benchmark.bench(fn _ -> :crypto.strong_rand_bytes(12) end)
-rand128 = Benchmark.bench(fn _ -> :crypto.strong_rand_bytes(16) end, 1)
-rand128_m = Benchmark.bench(fn _ -> :crypto.strong_rand_bytes(16) end)
-nonce64 = Benchmark.bench(fn _ -> NoNoncense.nonce(64) end, 1)
-nonce64_m = Benchmark.bench(fn _ -> NoNoncense.nonce(64) end)
-enc_nonce64 = Benchmark.bench(fn _ -> NoNoncense.encrypted_nonce(64, key192) end, 1)
-enc_nonce64_m = Benchmark.bench(fn _ -> NoNoncense.encrypted_nonce(64, key192) end)
-nonce96 = Benchmark.bench(fn _ -> NoNoncense.nonce(96) end, 1)
-nonce96_m = Benchmark.bench(fn _ -> NoNoncense.nonce(96) end)
-enc_nonce96 = Benchmark.bench(fn _ -> NoNoncense.encrypted_nonce(96, key192) end, 1)
-enc_nonce96_m = Benchmark.bench(fn _ -> NoNoncense.encrypted_nonce(96, key192) end)
-nonce128 = Benchmark.bench(fn _ -> NoNoncense.nonce(128) end, 1)
-nonce128_m = Benchmark.bench(fn _ -> NoNoncense.nonce(128) end)
-enc_nonce128 = Benchmark.bench(fn _ -> NoNoncense.encrypted_nonce(128, key128) end, 1)
-enc_nonce128_m = Benchmark.bench(fn _ -> NoNoncense.encrypted_nonce(128, key128) end)
+m10 = 10_000_000
+m100 = 100_000_000
+tasks = System.schedulers_online()
 
-"""
-NoNonce.nonce(64) single              #{nonce64} ops/s
-NoNonce.nonce(96) single              #{nonce96} ops/s
-NoNonce.nonce(128) single             #{nonce128} ops/s
-NoNonce.encrypted_nonce(64) single    #{enc_nonce64} ops/s
-NoNonce.encrypted_nonce(96) single    #{enc_nonce96} ops/s
-NoNonce.encrypted_nonce(128) single   #{enc_nonce128} ops/s
-:crypto.strong_rand_bytes(8) single   #{rand64} ops/s
-:crypto.strong_rand_bytes(12) single  #{rand96} ops/s
-:crypto.strong_rand_bytes(126) single #{rand128} ops/s
-NoNonce.nonce(64) multi               #{nonce64_m} ops/s
-NoNonce.nonce(96) multi               #{nonce96_m} ops/s
-NoNonce.nonce(128) multi              #{nonce128_m} ops/s
-NoNonce.encrypted_nonce(64) multi     #{enc_nonce64_m} ops/s
-NoNonce.encrypted_nonce(96) multi     #{enc_nonce96_m} ops/s
-NoNonce.encrypted_nonce(128) multi    #{enc_nonce128_m} ops/s
-:crypto.strong_rand_bytes(8) multi    #{rand64_m} ops/s
-:crypto.strong_rand_bytes(12) multi   #{rand96_m} ops/s
-:crypto.strong_rand_bytes(126) multi  #{rand128_m} ops/s
-"""
+%{
+  "rand64" => [fn -> :crypto.strong_rand_bytes(8) end, 1, m10],
+  "rand64_m" => [fn -> :crypto.strong_rand_bytes(8) end, tasks, m10],
+  "rand96" => [fn -> :crypto.strong_rand_bytes(12) end, 1, m10],
+  "rand96_m" => [fn -> :crypto.strong_rand_bytes(12) end, tasks, m10],
+  "rand128" => [fn -> :crypto.strong_rand_bytes(16) end, 1, m10],
+  "rand128_m" => [fn -> :crypto.strong_rand_bytes(16) end, tasks, m10],
+  "nonce64" => [fn -> NoNoncense.nonce(64) end, 1, m100],
+  "nonce64_m" => [fn -> NoNoncense.nonce(64) end, tasks, m100],
+  "nonce96" => [fn -> NoNoncense.nonce(96) end, 1, m100],
+  "nonce96_m" => [fn -> NoNoncense.nonce(96) end, tasks, m100],
+  "nonce128" => [fn -> NoNoncense.nonce(128) end, 1, m100],
+  "nonce128_m" => [fn -> NoNoncense.nonce(128) end, tasks, m100],
+  "enc_nonce64" => [fn -> NoNoncense.encrypted_nonce(64, key192) end, 1, m10],
+  "enc_nonce64_m" => [fn -> NoNoncense.encrypted_nonce(64, key192) end, tasks, m10],
+  "enc_nonce96" => [fn -> NoNoncense.encrypted_nonce(96, key192) end, 1, m10],
+  "enc_nonce96_m" => [fn -> NoNoncense.encrypted_nonce(96, key192) end, tasks, m10],
+  "enc_nonce128" => [fn -> NoNoncense.encrypted_nonce(128, key128) end, 1, m10],
+  "enc_nonce128_m" => [fn -> NoNoncense.encrypted_nonce(128, key128) end, tasks, m10],
+  "sortable_nonce64" => [fn -> NoNoncense.sortable_nonce(64) end, 1, m100],
+  "sortable_nonce64_m" => [fn -> NoNoncense.sortable_nonce(64) end, tasks, m100],
+  "sortable_nonce96" => [fn -> NoNoncense.sortable_nonce(96) end, 1, m100],
+  "sortable_nonce96_m" => [fn -> NoNoncense.sortable_nonce(96) end, tasks, m100],
+  "sortable_nonce128" => [fn -> NoNoncense.sortable_nonce(128) end, 1, m100],
+  "sortable_nonce128_m" => [fn -> NoNoncense.sortable_nonce(128) end, tasks, m100]
+}
+|> Benchmark.bench_many()
+|> Benchmark.format_results()
 |> IO.puts()

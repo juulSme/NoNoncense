@@ -34,6 +34,7 @@ defmodule MyApp.Application do
   use Application
 
   def start(_type, _args) do
+    # grab your node_list from your application environment
     machine_id = NoNoncense.MachineId.id!(node_list: [:"myapp@127.0.0.1"])
     :ok = NoNoncense.init(machine_id: machine_id)
 
