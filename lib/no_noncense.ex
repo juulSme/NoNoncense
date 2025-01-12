@@ -310,6 +310,18 @@ defmodule NoNoncense do
     end
   end
 
+  @doc """
+  Get the timestamp of the nonce as a `DateTime`, given the epoch of instance.
+  """
+  @spec get_datetime(atom(), nonce()) :: DateTime.t()
+  def get_datetime(name \\ __MODULE__, nonce) do
+    {_, _init_at, time_offset, _} = :persistent_term.get(name)
+    <<timestamp::@ts_bits, _::bits>> = nonce
+    epoch = System.time_offset(:millisecond) - time_offset
+    timestamp = timestamp + epoch
+    DateTime.from_unix!(timestamp, :millisecond)
+  end
+
   ###########
   # Private #
   ###########
