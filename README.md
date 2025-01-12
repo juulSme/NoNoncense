@@ -74,32 +74,38 @@ iex> <<_::128>> = NoNoncense.encrypted_nonce(128, :crypto.strong_rand_bytes(32))
 ## Benchmarks
 
 ```
-On Debian Bookworm, AMD 9700X (8C 16T), 32GB, 990 Pro, generating 100M nonces
+On Debian Bookworm, AMD 9700X (8C 16T), 32GB, 990 Pro.
 
-NoNonce.nonce(64) single                   22_306_381 ops/s
-NoNonce.nonce(96) single                   40_686_097 ops/s
-NoNonce.nonce(128) single                  41_549_756 ops/s
-NoNonce.encrypted_nonce(64) single          1_205_063 ops/s
-NoNonce.encrypted_nonce(96) single          1_140_176 ops/s
-NoNonce.encrypted_nonce(128) single         2_421_775 ops/s
-:crypto.strong_rand_bytes(8) single         2_650_561 ops/s
-:crypto.strong_rand_bytes(12) single        2_660_745 ops/s
-:crypto.strong_rand_bytes(126) single       2_654_720 ops/s
-NoNonce.nonce(64) multi                    39_031_122 ops/s
-NoNonce.nonce(96) multi                    38_306_529 ops/s
-NoNonce.nonce(128) multi                   39_012_560 ops/s
-NoNonce.encrypted_nonce(64) multi          10_033_706 ops/s
-NoNonce.encrypted_nonce(96) multi           9_584_873 ops/s
-NoNonce.encrypted_nonce(128) multi         13_515_584 ops/s
-:crypto.strong_rand_bytes(8) multi          4_751_390 ops/s
-:crypto.strong_rand_bytes(12) multi         4_766_312 ops/s
-:crypto.strong_rand_bytes(126) multi        4_749_853 ops/s
+nonce(128) single:             54_981_091 ops/s
+nonce(96) single:              44_348_625 ops/s
+nonce(128) multi:              37_745_241 ops/s
+nonce(64) multi:               37_617_656 ops/s
+nonce(96) multi:               37_552_652 ops/s
+sortable_nonce(96) multi:      35_124_078 ops/s
+sortable_nonce(128) multi:     34_819_544 ops/s
+nonce(64) single:              25_847_171 ops/s
+sortable_nonce(128) single:    21_776_095 ops/s
+sortable_nonce(96) single:     21_016_157 ops/s
+encrypted_nonce(128) multi:    13_485_052 ops/s
+encrypted_nonce(64) multi:     11_049_795 ops/s
+encrypted_nonce(96) multi:     10_438_713 ops/s
+sortable_nonce(64) multi:       8_192_779 ops/s
+sortable_nonce(64) single:      8_191_835 ops/s
+strong_rand_bytes(8) multi:     4_859_998 ops/s
+strong_rand_bytes(12) multi:    4_856_265 ops/s
+strong_rand_bytes(16) multi:    4_807_786 ops/s
+strong_rand_bytes(8) single:    2_731_625 ops/s
+strong_rand_bytes(12) single:   2_723_526 ops/s
+strong_rand_bytes(16) single:   2_723_058 ops/s
+encrypted_nonce(128) single:    2_446_565 ops/s
+encrypted_nonce(64) single:     1_209_200 ops/s
+encrypted_nonce(96) single:     1_118_734 ops/s
 ```
 
 Some things of note:
 
 - NoNoncense nonces generate much faster than random binaries.
 - All methods are quick enough to handle very high peak loads.
-- The plain nonce generation rate is hardly influenced by multithreading and seems to hit a bottleneck of some kind, probably to do with `:persistent_term` or `:atomics`. Still, it hits a really high rate and is almost as quick as calling a plain getter.
+- The plain nonce generation rate is hardly influenced by multithreading and seems to hit a bottleneck of some kind, probably to do with `:persistent_term` or `:atomics`. Still, it hits a really high rate.
 - Encrypting the nonce exacts a very hefty penalty, but parallellization scales well to alleviate the issue.
 - Triple DES sucks.
