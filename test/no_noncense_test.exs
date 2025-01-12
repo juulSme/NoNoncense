@@ -235,6 +235,12 @@ defmodule NoNoncenseTest do
       NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch)
     end
 
+    test "generates a new nonce" do
+      nonce = NoNoncense.sortable_nonce(@name, 64)
+      assert bit_size(nonce) == 64
+      assert nonce != NoNoncense.sortable_nonce(@name, 64)
+    end
+
     test "creates unique nonces with concurrent requests" do
       tasks = 10
       nonces_per_task = 100_000
@@ -250,11 +256,38 @@ defmodule NoNoncenseTest do
       NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch)
     end
 
+    test "generates a new nonce" do
+      nonce = NoNoncense.sortable_nonce(@name, 96)
+      assert bit_size(nonce) == 96
+      assert nonce != NoNoncense.sortable_nonce(@name, 96)
+    end
+
     test "creates unique nonces with concurrent requests" do
       tasks = 10
       nonces_per_task = 100_000
 
       concurrent_gen(tasks, nonces_per_task, fn -> NoNoncense.sortable_nonce(@name, 96) end)
+      |> Enum.count()
+      |> then(fn count -> assert count == tasks * nonces_per_task end)
+    end
+  end
+
+  describe "sortable_nonce(128)" do
+    setup do
+      NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch)
+    end
+
+    test "generates a new nonce" do
+      nonce = NoNoncense.sortable_nonce(@name, 128)
+      assert bit_size(nonce) == 128
+      assert nonce != NoNoncense.sortable_nonce(@name, 128)
+    end
+
+    test "creates unique nonces with concurrent requests" do
+      tasks = 10
+      nonces_per_task = 100_000
+
+      concurrent_gen(tasks, nonces_per_task, fn -> NoNoncense.sortable_nonce(@name, 128) end)
       |> Enum.count()
       |> then(fn count -> assert count == tasks * nonces_per_task end)
     end

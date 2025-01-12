@@ -9,7 +9,7 @@ defmodule NoNoncense.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: """
-      Generate globally unique nonces in distributed Elixir
+      Generate locally unique nonces in distributed Elixir
       """,
       package: [
         licenses: ["Apache-2.0"],

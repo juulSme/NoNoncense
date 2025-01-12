@@ -10,11 +10,42 @@ defmodule NoNoncense do
   @padding_bits_128 128 - @ts_bits - @id_bits - 64
 
   @moduledoc """
-  Generate globally unique nonces (number-only-used-once) in distributed Elixir.
+  Generate locally unique nonces (number-only-used-once) in distributed Elixir.
 
-  The nonces are guaranteed to be unique if:
-  - machine IDs are unique for each node (`NoNoncense.MachineId.ConflictGuard` can help there)
-  - individual machines maintain a somewhat accurate clock (specifically, the UTC clock has to have progressed between node restarts)
+  Locally unique means that the nonces are unique within your application/database/domain, as opposed to globally unique nonces that are unique across applications/databases/domains, like UUIDs.
+
+  ## Nonce types
+
+  Several types of nonces can be generated, although they share their basic composition. The first 42 bits are a millisecond-precision timestamp (allows for ~139 years of operation), relative to the NoNoncense epoch (2025-01-01 00:00:00 UTC) by default. The next 9 bits are the machine ID (allows for 512 machines). The remaining bits are a per-machine counter.
+
+  ### Counter nonces
+
+  - Features: unique.
+  - Generation rate: very high.
+  - Info leak: medium (machine init time, creation order).
+  - Crypto: technically suitable for block ciphers in modes that require an IV that is unique but not necessarily unpredictable (like CTR, OFB, CCM, and GCM), and some streaming ciphers. Only when some info leak is acceptable.
+
+  96/128 bits counter nonces can be generated at a practically unlimited rate of >= 2^45 nonces per ms per machien. With 64-bits nonces, an overflow of the 13 counter bits will trigger a timestamp increase by 1ms (the timestamp effectively functions as an extended counter after initialization). The maximum *sustained* rate is 8M/s per machine. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the nonce timestamp/counter catches up to the actual time. In practice, that will probably never happen, and nonces will be generated at a higher rate. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M 64-bit nonces as quickly as hardware will allow. Benchmarking shows rates in the tens of millions per second are attainable.
+
+  ### Sortable nonces (Snowflake IDs)
+
+  - Features: unique, time-sortable.
+  - Generation rate: high.
+  - Info leak: high (creation time, creation order).
+  - Crypto: not recommended. They leak more info than counter nonces but are slower to generate.
+
+  Sortable nonces have an accurate creation timestamp, instead of the plaintext nonces' init time + counter hybrid. This makes them equivalent to [Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID), apart from the slightly altered bit distribution of NoNoncense nonces (42 instead of 41 timestamp bits, 9 instead of 10 ID bits, no unused bit).
+
+  This has some implications. Again, 96/128-bits sortable nonces can be generated as quickly as your hardware can go. However, the 64-bits variant can be generated at 8M/s per machine and can't ever burst beyond that (the "saving up seconds" mechanic of counter nonces does not apply here). This should of course be plenty for most applications.
+
+  ### Encrypted nonces
+
+  - Features: unique, unpredictable.
+  - Generation rate: medium (scales well with CPU cores).
+  - Info leak: none, except for 96-bits variant which leaks some message ordering info.
+  - Crypto: same as counter nonces, but no info leaks. Additionally, suitable for block cipher modes that require unpredictable IVs, like CBC and CFB.
+
+  These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. An important caveat is that 96-bits encrypted nonces leak message ordering info in their last 32 bits. For more info, see [encrypted nonces](#module-encrypted-nonces).
 
   ## Usage
 
@@ -52,19 +83,13 @@ defmodule NoNoncense do
       iex> <<_::96>> = NoNoncense.encrypted_nonce(96, :crypto.strong_rand_bytes(24))
       iex> <<_::128>> = NoNoncense.encrypted_nonce(128, :crypto.strong_rand_bytes(32))
 
-  ## How it works
 
-  The first 42 bits are a millisecond-precision timestamp of the initialization time (allows for ~139 years of operation), relative to the NoNoncense epoch (2025-01-01 00:00:00 UTC) by default. The next 9 bits are the machine ID (allows for 512 machines). The remaining bits are a per-machine counter.
+  ## Uniqueness guarantees
 
-  A counter overflow will trigger a timestamp increase by 1ms (the timestamp effectively functions as a cycle counter after initialization). The theoretical maximum sustained rate is 2^counter-bits nonces per millisecond per machine. For 64-bit nonces (with a 13-bit counter), that means 8192 nonces per millisecond per machine. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the nonce timestamp/counter catches up to the actual time. In practice, that will probably never happen, and nonces will be generated at a higher rate. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M 64-bit nonces at virtually unlimited rate. Benchmarking shows rates around 20M/s are attainable.
-
-  The design is inspired by Twitter's Snowflake IDs, although there are some differences, most notably in the timestamp which is _not_ a message timestamp. Unlike Snowflake IDs, nonces are meant to be opaque, and not used for sorting.
-
-  > #### Suitability of plain nonces for cryptography {: .warning}
-  >
-  > The plain nonces produced by `nonce/2` are technically suitable for cryptography as IVs for block cipher modes that permit use of a counter, like CTR, OFB, CCM, and GCM, and for streaming ciphers like ChaCha20. However, block cipher modes that require not just unique but also unpredictable IVs, like CBC and CFB, should use `encrypted_nonce/2` (or random IVs).
-  >
-  > A plain nonce's timestamp bits will leak the node initialization time, the machine ID, and the counter, and - with improbably high-rate 64-bit nonces - the nonce generation timestamp. If that is not acceptable, use `encrypted_nonce/2` instead of the plain nonce functions.
+  Nonces are guaranteed to be unique if:
+  - Machine IDs are unique for each node (`NoNoncense.MachineId` and `NoNoncense.MachineId.ConflictGuard` can help there).
+  - Individual machines maintain a somewhat accurate clock (specifically, the UTC clock has to have progressed between node restarts).
+  - (Sortable nonces only) the machine clock has to be accurate.
 
   ## Encrypted nonces
 
@@ -150,7 +175,7 @@ defmodule NoNoncense do
   end
 
   @doc """
-  Generate a new 64/96/128-bits nonce.
+  Generate a new 64/96/128-bits counter-like nonce.
 
   ## Examples
 
@@ -236,9 +261,24 @@ defmodule NoNoncense do
   end
 
   @doc """
-  Generate a nonce that is sortable by generation time, like a Snowflake ID. The first 42 bits contain the generation timestamp, unlike `nonce/2` nonces.
+  Generate a nonce that is sortable by generation time, like a Snowflake ID. The first 42 bits contain the timestamp.
 
   These nonces are *not* suitable for cryptographic purposes because they are predictable and leak their generation timestamp.
+
+  ## Examples
+
+      iex> NoNoncense.sortable_nonce(64)
+      <<0, 15, 27, 213, 143, 128, 0, 0>>
+      iex> NoNoncense.sortable_nonce(96)
+      <<0, 15, 27, 215, 172, 0, 0, 0, 0, 0, 0, 0>>
+      iex> NoNoncense.sortable_nonce(128)
+      <<0, 15, 27, 217, 161, 128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>
+
+      # the generation time can be extracted
+      iex> <<ts::42, _::22>> = <<0, 15, 27, 213, 143, 128, 0, 0>>
+      iex> epoch = ~U[2025-01-01T00:00:00Z] |> DateTime.to_unix(:millisecond)
+      iex> DateTime.from_unix!(ts + epoch, :millisecond)
+      ~U[2025-01-12 17:38:49.534Z]
   """
   @spec sortable_nonce(atom(), nonce_size()) :: nonce()
   def sortable_nonce(name \\ __MODULE__, bit_size) when bit_size in [64, 96, 128] do
