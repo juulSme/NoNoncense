@@ -45,7 +45,7 @@ defmodule NoNoncense do
   - Info leak: none.
   - Crypto: same as counter nonces, but no info leaks. Additionally, suitable for block cipher modes that require unpredictable IVs, like CBC and CFB.
 
-  These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. An important caveat is that 96-bits encrypted nonces leak message ordering info in their last 32 bits. For more info, see [encrypted nonces](#module-encrypted-nonces).
+  These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. For more info, see [encrypted nonces](#module-encrypted-nonces).
 
   ## Usage
 
