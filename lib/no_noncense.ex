@@ -34,7 +34,7 @@ defmodule NoNoncense do
   - Info leak: high (creation time, creation order).
   - Crypto: not recommended. They leak more info than counter nonces but are slower to generate.
 
-  Sortable nonces have an accurate creation timestamp, instead of the plaintext nonces' init time + counter hybrid. This makes them equivalent to [Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID), apart from the slightly altered bit distribution of NoNoncense nonces (42 instead of 41 timestamp bits, 9 instead of 10 ID bits, no unused bit).
+  Sortable nonces have an accurate creation timestamp, instead of counter nonces' hybrid init time + counter construction. This makes them equivalent to [Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID), apart from the slightly altered bit distribution of NoNoncense nonces (42 instead of 41 timestamp bits, 9 instead of 10 ID bits, no unused bit).
 
   This has some implications. Again, 96/128-bits sortable nonces can be generated as quickly as your hardware can go. However, the 64-bits variant can be generated at 8M/s per machine and can't ever burst beyond that (the "saving up seconds" mechanic of counter nonces does not apply here). This should of course be plenty for most applications.
 
@@ -42,7 +42,7 @@ defmodule NoNoncense do
 
   - Features: unique, unpredictable.
   - Generation rate: medium (scales well with CPU cores).
-  - Info leak: none, except for 96-bits variant which leaks some message ordering info.
+  - Info leak: none.
   - Crypto: same as counter nonces, but no info leaks. Additionally, suitable for block cipher modes that require unpredictable IVs, like CBC and CFB.
 
   These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. An important caveat is that 96-bits encrypted nonces leak message ordering info in their last 32 bits. For more info, see [encrypted nonces](#module-encrypted-nonces).
@@ -71,14 +71,20 @@ defmodule NoNoncense do
         end
       end
 
-  Then you can generate plain and encrypted nonces.
+  Then you can generate nonces.
 
-      # generate nonces
+      # generate counter nonces
       iex> <<_::64>> = NoNoncense.nonce(64)
       iex> <<_::96>> = NoNoncense.nonce(96)
       iex> <<_::128>> = NoNoncense.nonce(128)
 
+      # generate sortable nonces
+      iex> <<_::64>> = NoNoncense.sortable_nonce(64)
+      iex> <<_::96>> = NoNoncense.sortable_nonce(96)
+      iex> <<_::128>> = NoNoncense.sortable_nonce(128)
+
       # generate encrypted nonces
+      # be sure to read the NoNoncense docs before using 64/96 bits encrypted nonces
       iex> <<_::64>> = NoNoncense.encrypted_nonce(64, :crypto.strong_rand_bytes(24))
       iex> <<_::96>> = NoNoncense.encrypted_nonce(96, :crypto.strong_rand_bytes(24))
       iex> <<_::128>> = NoNoncense.encrypted_nonce(128, :crypto.strong_rand_bytes(32))
@@ -93,7 +99,7 @@ defmodule NoNoncense do
 
   ## Encrypted nonces
 
-  By encrypting a nonce, the timestamp, machine ID and message ordering information leak can be prevented. However, we wish to encrypt in a way that **maintains the uniqueness guarantee** of the plain input nonce. So 2^64 unique inputs should generate 2^64 unique outputs, same for the other sizes.
+  By encrypting a nonce, the timestamp, machine ID and message ordering information leak can be prevented. However, we wish to encrypt in a way that **maintains the uniqueness guarantee** of the input counter nonce. So 2^64 unique inputs should generate 2^64 unique outputs, same for the other sizes.
 
   IETF has some [wisdom to share](https://datatracker.ietf.org/doc/html/rfc8439#section-4) on the topic of nonce encryption (in the context of ChaCha20 / Poly1305 nonces):
 
@@ -103,21 +109,15 @@ defmodule NoNoncense do
 
   > #### 128-bit encrypted nonces {: .tip}
   >
-  > We have "perfect" AES256-encrypted 128-bit nonces, each one unique and indistinguishable from random nonces, with no information leakage.
+  > We have AES256-encrypted 128-bit nonces that are unique and indistinguishable from random noise.
 
   However, for 64-bit nonces we are limited to block ciphers with 64-bit block sizes. There are only a few of those in OTP's `m::crypto` module, namely DES, 3DES, and BlowFish. DES is broken and can merely be considered obfuscation at this point, despite the IETF quote (from 2018). BlowFish performs atrociously in the OTP implementation (~30 times worse than AES, dropping from ~1.8M ops/s to 60K ops/s) to the point where it can realistically form a bottleneck. 3DES seems like the least worst option, and practical attacks on it are mainly aimed at block collisions (within a message) which doesn't apply here. Still, it's old.
 
-  > #### 64-bit encrypted nonces {: .info}
+  For 96-bit nonces there are no block ciphers whatsoever to choose from. All we can do is generate a 64-bits nonce and postfix 4 zero-bytes. That way the nonce is unique, and while the last 4 bytes are predictable, the nonce as a whole is not and no message ordering information leaks.
+
+  > #### 64/96-bit encrypted nonces {: .info}
   >
-  > We have 3DES-encrypted 64-bit nonces, which is probably good enough.
-
-  For 96-bit nonces there are no block ciphers whatsoever to choose from. The best we can do while maintaining uniqueness is use a 64-bit cipher for the first 64 bits (hiding the timestamp) but leave the remaining 32 bits of the counter unencrypted and leaking info on message ordering.
-
-  There is an alternative. Ciphers that use 96-bit IVs (ChaCha20, GCM-mode block cipher) pre- or postfix an all-zero block counter. That means we can use a 64-bit encrypted nonce with an all-zero 64-bit counter (for example, for ChaCha20, prefix 64 zero bits to a 64-bit nonce). That way, at least the _message_ counter part of the nonce is encrypted (and the block counter is not part of the nonce that is attached to the message).
-
-  > #### 96-bit encrypted nonces {: .warning}
-  >
-  > If you really can't tolerate **any** information leakage through the nonce, you should not use encrypted nonces of 96 bits because the last 32 counter bits can't be encrypted. Consider using 64-bit nonces with a larger block counter complement instead.
+  > We have 3DES-encrypted 64/96-bit nonces, which is probably good enough.
   """
   require Logger
 
@@ -234,9 +234,18 @@ defmodule NoNoncense do
   @doc """
   Generate a new nonce and encrypt it. This creates an unpredictable but still unique nonce.
 
-  > #### 64/96 bits caveats {: .warning}
-  >
-  > Be sure to read the docs of `NoNoncense` for important caveats before deciding to use 64/96-bits encypted nonces.
+      iex> key = :crypto.strong_rand_bytes 24
+      <<76, 201, 87, 221, 39, 41, 231, 66, 80, 199, 18, 164, 248, 5, 92, 42, 246, 73,
+        151, 198, 51, 190, 81, 82>>
+      iex> NoNoncense.encrypted_nonce(64, key)
+      <<50, 231, 215, 98, 233, 96, 157, 205>>
+      iex> NoNoncense.encrypted_nonce(96, key)
+      <<6, 138, 218, 96, 131, 136, 51, 242, 0, 0, 0, 0>>
+      iex> key = :crypto.strong_rand_bytes 32
+      <<175, 189, 46, 130, 235, 88, 83, 220, 44, 179, 255, 75, 255, 212, 9, 148, 53,
+        211, 157, 137, 52, 48, 247, 155, 222, 130, 70, 227, 57, 89, 137, 171>>
+      iex> NoNoncense.encrypted_nonce(128, key)
+      <<162, 10, 94, 4, 91, 56, 147, 198, 46, 87, 142, 197, 128, 41, 79, 209>>
   """
   @spec encrypted_nonce(atom(), nonce_size(), binary()) :: nonce()
   def encrypted_nonce(name \\ __MODULE__, bit_size, key)
@@ -247,11 +256,8 @@ defmodule NoNoncense do
     :crypto.crypto_one_time(:des_ede3_cbc, key, <<0::64>>, nonce, true)
   end
 
-  # this is *not* unpredictable, because of the counter use
   def encrypted_nonce(name, 96, key = <<_::192>>) do
-    <<part0::bits-64, part1::bits-32>> = nonce(name, 96)
-    part0_enc = :crypto.crypto_one_time(:des_ede3_cbc, key, <<0::64>>, part0, true)
-    <<part0_enc::bits, part1::bits>>
+    <<encrypted_nonce(name, 64, key)::bits, 0::32>>
   end
 
   def encrypted_nonce(name, 128, key = <<_::256>>) do
@@ -311,7 +317,8 @@ defmodule NoNoncense do
   end
 
   @doc """
-  Get the timestamp of the nonce as a `DateTime`, given the epoch of instance.
+  Get the timestamp of the nonce as a `DateTime`, given the epoch of the instance.
+  This should only be used for `sortable_nonce/2` nonces.
   """
   @spec get_datetime(atom(), nonce()) :: DateTime.t()
   def get_datetime(name \\ __MODULE__, nonce) do

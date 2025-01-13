@@ -51,7 +51,7 @@ defmodule MyApp.Application do
 end
 ```
 
-Then you can generate plain and encrypted nonces.
+Then you can generate nonces.
 
 ```elixir
 # generate counter nonces
@@ -106,6 +106,6 @@ Some things of note:
 
 - NoNoncense nonces generate much faster than random binaries.
 - All methods are quick enough to handle very high peak loads.
-- The plain nonce generation rate is hardly influenced by multithreading and seems to hit a bottleneck of some kind, probably to do with `:persistent_term` or `:atomics`. Still, it hits a really high rate.
+- The plain (counter) nonce generation rate is hardly influenced by multithreading and seems to hit a bottleneck of some kind, probably to do with `:persistent_term` or `:atomics`. Still, it hits a really high rate.
 - Encrypting the nonce exacts a very hefty penalty, but parallellization scales well to alleviate the issue.
 - Triple DES sucks.

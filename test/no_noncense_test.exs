@@ -298,6 +298,27 @@ defmodule NoNoncenseTest do
       NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch)
     end
 
+    test "generates new 64-bits nonces" do
+      key = :crypto.strong_rand_bytes(24)
+      nonce = NoNoncense.encrypted_nonce(@name, 64, key)
+      assert bit_size(nonce) == 64
+      assert nonce != NoNoncense.encrypted_nonce(@name, 64, key)
+    end
+
+    test "generates new 96-bits nonces" do
+      key = :crypto.strong_rand_bytes(24)
+      nonce = NoNoncense.encrypted_nonce(@name, 96, key)
+      assert bit_size(nonce) == 96
+      assert nonce != NoNoncense.encrypted_nonce(@name, 96, key)
+    end
+
+    test "generates new 128-bits nonces" do
+      key = :crypto.strong_rand_bytes(32)
+      nonce = NoNoncense.encrypted_nonce(@name, 128, key)
+      assert bit_size(nonce) == 128
+      assert nonce != NoNoncense.encrypted_nonce(@name, 128, key)
+    end
+
     # @tag timeout: :infinity
     # test "find collision" do
     #   # 2^31 64 bits nonces take 16GB memory after which we terminate
