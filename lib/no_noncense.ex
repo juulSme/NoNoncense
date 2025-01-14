@@ -126,7 +126,7 @@ defmodule NoNoncense do
   @type nonce_size :: 64 | 96 | 128
   @type nonce :: <<_::64>> | <<_::96>> | <<_::128>>
 
-  @type init_opts :: [epoch: non_neg_integer(), name: atom()]
+  @type init_opts :: [epoch: non_neg_integer(), name: atom(), machine_id: non_neg_integer()]
 
   @doc """
   Initialize a nonce factory. Multiple instances with different names, epochs and even machine IDs are supported.
