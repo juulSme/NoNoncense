@@ -12,7 +12,7 @@ defmodule NoNoncense.MachineId do
 
   After https://github.com/blitzstudios/snowflake
   """
-  @defaults %{machine_id: nil, node_list: [], max_nodes: 1024}
+  @defaults %{machine_id: nil, node_list: [], max_nodes: 512}
 
   @type host_identifiers :: [binary() | atom()]
   @type id_opts :: [
