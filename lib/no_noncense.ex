@@ -1,14 +1,4 @@
 defmodule NoNoncense do
-  @one_day_ms 24 * 60 * 60 * 1000
-  @ts_bits 42
-  @id_bits 9
-  @machine_id_limit Integer.pow(2, @id_bits) - 1
-  @count_bits_64 64 - @ts_bits - @id_bits
-  @cycle_size_64 Integer.pow(2, min(64, @count_bits_64))
-  @count_bits_96 96 - @ts_bits - @id_bits
-  @cycle_size_96 Integer.pow(2, min(64, @count_bits_96))
-  @padding_bits_128 128 - @ts_bits - @id_bits - 64
-
   @moduledoc """
   Generate locally unique nonces (number-only-used-once) in distributed Elixir.
 
@@ -122,6 +112,16 @@ defmodule NoNoncense do
   require Logger
 
   @nononce_epoch ~U[2025-01-01T00:00:00Z] |> DateTime.to_unix(:millisecond)
+  @one_day_ms 24 * 60 * 60 * 1000
+  @ts_bits 42
+  @id_bits 9
+  @non_ts_bits_64 64 - @ts_bits
+  @machine_id_limit Integer.pow(2, @id_bits) - 1
+  @count_bits_64 @non_ts_bits_64 - @id_bits
+  @cycle_size_64 Integer.pow(2, min(64, @count_bits_64))
+  @count_bits_96 96 - @ts_bits - @id_bits
+  @cycle_size_96 Integer.pow(2, min(64, @count_bits_96))
+  @padding_bits_128 128 - @ts_bits - @id_bits - 64
 
   @type nonce_size :: 64 | 96 | 128
   @type nonce :: <<_::64>> | <<_::96>> | <<_::128>>
@@ -292,14 +292,14 @@ defmodule NoNoncense do
 
     ts_counter = :atomics.add_get(counters_ref, 2, 1)
     # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, we can assume no overflow
-    <<current_ts::42, new_count::22>> = <<ts_counter::64>>
+    <<current_ts::@ts_bits, new_count::@non_ts_bits_64>> = <<ts_counter::64>>
 
     now = time_from_offset(time_offset)
 
     # if timestamp has changed since last invocation...
     if now > current_ts do
       # ...reset the counter. Under load, this should be a minority of cases.
-      <<new_ts_counter::64>> = <<now::42, 0::22>>
+      <<new_ts_counter::64>> = <<now::@ts_bits, 0::@non_ts_bits_64>>
       write_result = :atomics.compare_exchange(counters_ref, 2, ts_counter, new_ts_counter)
 
       case write_result do
