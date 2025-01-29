@@ -15,18 +15,22 @@ defmodule NoNoncense do
   - Info leak: medium (machine init time, creation order).
   - Crypto: technically suitable for block ciphers in modes that require an IV that is unique but not necessarily unpredictable (like CTR, OFB, CCM, and GCM), and some streaming ciphers. Only when some info leak is acceptable.
 
-  96/128 bits counter nonces can be generated at a practically unlimited rate of >= 2^45 nonces per ms per machien. With 64-bits nonces, an overflow of the 13 counter bits will trigger a timestamp increase by 1ms (the timestamp effectively functions as an extended counter after initialization). The maximum *sustained* rate is 8M/s per machine. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the nonce timestamp/counter catches up to the actual time. In practice, that will probably never happen, and nonces will be generated at a higher rate. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M 64-bit nonces as quickly as hardware will allow. Benchmarking shows rates in the tens of millions per second are attainable.
+  Counter nonces are basically a counter that is initialized with the machine (node) start time. An overflow of a nonce's counter bits will trigger a timestamp increase by 1ms, implying that the timestamp effectively functions as an extended counter. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the timestamp catches up to the actual time.
+
+  That means that the maximum *sustained* rate is 8M/s per machine for 64-bits nonces (which have 13 counter bits). In practice it is unlikely that nonces are generated at such an extreme sustained rate, and the timestamp will lag behind the actual time. This creates "saved up seconds" that can be used to *burst* to even higher rates. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M nonces as quickly as hardware will allow. Benchmarking shows rates in the tens of millions per second are attainable this way.
+
+  96/128 bits counter nonces have such large counters that they can be generated at a practically unlimited sustained rate of >= 2^45 nonces per ms per machine, meaning they will never catch the actual time, and the practical rate is only limited by hardware.
 
   ### Sortable nonces (Snowflake IDs)
 
   - Features: unique, time-sortable.
   - Generation rate: high.
   - Info leak: high (creation time, creation order).
-  - Crypto: not recommended. They leak more info than counter nonces but are slower to generate.
+  - Crypto: not recommended. They leak more info than counter nonces but are slightly slower to generate.
 
-  Sortable nonces have an accurate creation timestamp, instead of counter nonces' hybrid init time + counter construction. This makes them equivalent to [Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID), apart from the slightly altered bit distribution of NoNoncense nonces (42 instead of 41 timestamp bits, 9 instead of 10 ID bits, no unused bit).
+  Sortable nonces have an accurate creation timestamp (as opposed to counter nonces). This makes them equivalent to [Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID), apart from the slightly altered bit distribution of NoNoncense nonces (42 instead of 41 timestamp bits, 9 instead of 10 ID bits, no unused bit).
 
-  This has some implications. Again, 96/128-bits sortable nonces can be generated as quickly as your hardware can go. However, the 64-bits variant can be generated at 8M/s per machine and can't ever burst beyond that (the "saving up seconds" mechanic of counter nonces does not apply here). This should of course be plenty for most applications.
+  This has some implications. Again, 96/128-bits sortable nonces can be generated as quickly as your hardware can go. However, the 64-bits variant can be generated at 8M/s per machine and can't ever burst beyond that (the "saved-up-seconds" mechanic of counter nonces does not apply here). This should of course be plenty for most applications.
 
   ### Encrypted nonces
 
@@ -35,7 +39,7 @@ defmodule NoNoncense do
   - Info leak: none.
   - Crypto: same as counter nonces, but no info leaks. Additionally, suitable for block cipher modes that require unpredictable IVs, like CBC and CFB.
 
-  These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. For more info, see [encrypted nonces](#module-encrypted-nonces).
+  These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. For more info, see [nonce encryption](#module-nonce-encryption).
 
   ## Usage
 
@@ -87,7 +91,7 @@ defmodule NoNoncense do
   - Individual machines maintain a somewhat accurate clock (specifically, the UTC clock has to have progressed between node restarts).
   - (Sortable nonces only) the machine clock has to be accurate.
 
-  ## Encrypted nonces
+  ## Nonce encryption
 
   By encrypting a nonce, the timestamp, machine ID and message ordering information leak can be prevented. However, we wish to encrypt in a way that **maintains the uniqueness guarantee** of the input counter nonce. So 2^64 unique inputs should generate 2^64 unique outputs, same for the other sizes.
 
@@ -233,6 +237,8 @@ defmodule NoNoncense do
 
   @doc """
   Generate a new nonce and encrypt it. This creates an unpredictable but still unique nonce.
+
+  For more info, see [nonce encryption](#module-nonce-encryption).
 
       iex> key = :crypto.strong_rand_bytes 24
       <<76, 201, 87, 221, 39, 41, 231, 66, 80, 199, 18, 164, 248, 5, 92, 42, 246, 73,
