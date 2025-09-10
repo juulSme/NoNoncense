@@ -115,7 +115,7 @@ defmodule NoNoncense do
   """
   require Logger
 
-  @nononce_epoch ~U[2025-01-01T00:00:00Z] |> DateTime.to_unix(:millisecond)
+  @no_noncense_epoch ~U[2025-01-01T00:00:00Z] |> DateTime.to_unix(:millisecond)
   @one_day_ms 24 * 60 * 60 * 1000
   @ts_bits 42
   @id_bits 9
@@ -123,9 +123,13 @@ defmodule NoNoncense do
   @machine_id_limit Integer.pow(2, @id_bits) - 1
   @count_bits_64 @non_ts_bits_64 - @id_bits
   @cycle_size_64 Integer.pow(2, min(64, @count_bits_64))
+  @atomic_cycle_bits_64 64 - @count_bits_64
   @count_bits_96 96 - @ts_bits - @id_bits
-  @cycle_size_96 Integer.pow(2, min(64, @count_bits_96))
+  @atomic_cycle_bits_96 64 - @count_bits_96
   @padding_bits_128 128 - @ts_bits - @id_bits - 64
+
+  @counter_idx 1
+  @sortable_counter_idx 2
 
   @type nonce_size :: 64 | 96 | 128
   @type nonce :: <<_::64>> | <<_::96>> | <<_::128>>
@@ -152,7 +156,7 @@ defmodule NoNoncense do
   @spec init(init_opts()) :: :ok
   def init(opts \\ []) do
     name = opts[:name] || __MODULE__
-    epoch = opts[:epoch] || @nononce_epoch
+    epoch = opts[:epoch] || @no_noncense_epoch
     machine_id = Keyword.fetch!(opts, :machine_id)
 
     if machine_id < 0 or machine_id > @machine_id_limit,
@@ -163,7 +167,7 @@ defmodule NoNoncense do
     init_at = time_from_offset(time_offset)
 
     timestamp_overflow = Integer.pow(2, @ts_bits)
-    if init_at > timestamp_overflow, do: raise(RuntimeError, "timestamp overflow")
+    if init_at >= timestamp_overflow, do: raise(RuntimeError, "timestamp overflow")
     days_until_overflow = div(timestamp_overflow - init_at, @one_day_ms)
 
     if days_until_overflow <= 365,
@@ -171,8 +175,8 @@ defmodule NoNoncense do
 
     counters_ref = :atomics.new(2, signed: false)
     # the counter will overflow to 0 on the first nonce generation
-    :atomics.put(counters_ref, 1, Integer.pow(2, 64) - 1)
-    :atomics.put(counters_ref, 2, init_at)
+    :atomics.put(counters_ref, @counter_idx, Integer.pow(2, 64) - 1)
+    :atomics.put(counters_ref, @sortable_counter_idx, init_at)
 
     state = {machine_id, init_at, time_offset, counters_ref}
     :ok = :persistent_term.put(name, state)
@@ -200,11 +204,11 @@ defmodule NoNoncense do
 
     # we can generate 10B nonce/s for 60 years straight before the unsigned 64-bits int overflows
     # so we don't need to worry about the atomic counter itself overflowing
-    atomic_count = :atomics.add_get(counters_ref, 1, 1)
+    atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
 
-    # # but we do need to worry about the nonce's counter - which may be only 13 bits for a 64-bit nonce - overflowing
-    cycle_n = div(atomic_count, @cycle_size_64)
-    count = atomic_count - cycle_n * @cycle_size_64
+    # but we do need to worry about the nonce's counter - which may be only 13 bits for a 64-bit nonce - overflowing
+    # we divide the 64-bit atomic counter space to derive the nonce's cycle count and counter
+    <<cycle_n::@atomic_cycle_bits_64, count::@count_bits_64>> = <<atomic_count::64>>
 
     # the nonce timestamp is actually an init timestamp + cycle counter
     timestamp = init_at + cycle_n
@@ -219,10 +223,8 @@ defmodule NoNoncense do
   def nonce(name, 96) do
     {machine_id, init_at, _, counters_ref} = :persistent_term.get(name)
 
-    atomic_count = :atomics.add_get(counters_ref, 1, 1)
-
-    cycle_n = div(atomic_count, @cycle_size_96)
-    count = atomic_count - cycle_n * @cycle_size_96
+    atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
+    <<cycle_n::@atomic_cycle_bits_96, count::@count_bits_96>> = <<atomic_count::64>>
 
     to_nonce(init_at + cycle_n, machine_id, count, 96)
   end
@@ -230,7 +232,7 @@ defmodule NoNoncense do
   def nonce(name, 128) do
     {machine_id, init_at, _, counters_ref} = :persistent_term.get(name)
 
-    atomic_count = :atomics.add_get(counters_ref, 1, 1)
+    atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
 
     to_nonce(init_at, machine_id, atomic_count, 128)
   end
@@ -296,7 +298,7 @@ defmodule NoNoncense do
   def sortable_nonce(name \\ __MODULE__, bit_size) when bit_size in [64, 96, 128] do
     {machine_id, _init_at, time_offset, counters_ref} = :persistent_term.get(name)
 
-    ts_counter = :atomics.add_get(counters_ref, 2, 1)
+    ts_counter = :atomics.add_get(counters_ref, @sortable_counter_idx, 1)
     # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, we can assume no overflow
     <<current_ts::@ts_bits, new_count::@non_ts_bits_64>> = <<ts_counter::64>>
 
@@ -306,9 +308,9 @@ defmodule NoNoncense do
     if now > current_ts do
       # ...reset the counter. Under load, this should be a minority of cases.
       <<new_ts_counter::64>> = <<now::@ts_bits, 0::@non_ts_bits_64>>
-      write_result = :atomics.compare_exchange(counters_ref, 2, ts_counter, new_ts_counter)
 
-      case write_result do
+      :atomics.compare_exchange(counters_ref, @sortable_counter_idx, ts_counter, new_ts_counter)
+      |> case do
         :ok -> to_nonce(now, machine_id, 0, bit_size)
         _ -> sortable_nonce(name, bit_size)
       end
