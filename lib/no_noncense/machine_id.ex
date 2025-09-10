@@ -4,6 +4,10 @@ defmodule NoNoncense.MachineId do
 
   To determine the unique node ID, you must provide a list of possible node identifiers. The possible identifiers are IP addresses, OTP node identifiers, hostnames and fully-qualified domain names. You should only provide possible identifiers that can't conflict with one another. So if you don't explicitly set OTP node names you should not add the default `:"nonode@nohost"` to your identifier list.
 
+  Notes:
+  - The default `:max_nodes` is 512, producing valid IDs in the range 0..511.
+  - The `node_list` is treated as a set (an `:ordset`) when matching host identifiers; its ordering does not influence which ID is chosen. What matters is that every node uses the same set of possible identifiers so matches are stable across nodes.
+
   > #### Use the same node list everywhere {: .warning}
   >
   > Your `node_list` must be the same for every node or the generated machine IDs will not be unique.
@@ -36,7 +40,7 @@ defmodule NoNoncense.MachineId do
       iex> MachineId.id!(machine_id: 1, node_list: node_list)
       1
 
-      # the node ID must be within the provided range (default 0-1023)
+      # the node ID must be within the provided range (default 0-511)
       iex> node_list = ["1.1.1.1", "127.0.0.1", "8.8.8.8", "0.0.0.0"]
       iex> MachineId.id!(max_nodes: 2, node_list: node_list)
       ** (RuntimeError) Node ID 2 out of range 0-1
@@ -82,7 +86,7 @@ defmodule NoNoncense.MachineId do
     end
   end
 
-  defp gen_machine_id(c = %{machine_id: id}) when id >= 0 and id < c.max_nodes - 1, do: id
+  defp gen_machine_id(c = %{machine_id: id}) when id >= 0 and id < c.max_nodes, do: id
 
   defp gen_machine_id(c) do
     raise(RuntimeError, "Node ID #{c.machine_id} out of range 0-#{c.max_nodes - 1}")
