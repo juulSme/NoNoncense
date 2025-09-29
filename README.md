@@ -76,36 +76,45 @@ iex> <<_::128>> = NoNoncense.encrypted_nonce(128, :crypto.strong_rand_bytes(32))
 ```
 On Debian Bookworm, AMD 9700X (8C 16T), 32GB, 990 Pro.
 
-nonce(128) single:             54_981_091 ops/s
-nonce(96) single:              44_348_625 ops/s
-nonce(128) multi:              37_745_241 ops/s
-nonce(64) multi:               37_617_656 ops/s
-nonce(96) multi:               37_552_652 ops/s
-sortable_nonce(96) multi:      35_124_078 ops/s
-sortable_nonce(128) multi:     34_819_544 ops/s
-nonce(64) single:              25_847_171 ops/s
-sortable_nonce(128) single:    21_776_095 ops/s
-sortable_nonce(96) single:     21_016_157 ops/s
-encrypted_nonce(128) multi:    13_485_052 ops/s
-encrypted_nonce(64) multi:     11_049_795 ops/s
-encrypted_nonce(96) multi:     10_438_713 ops/s
-sortable_nonce(64) multi:       8_192_779 ops/s
-sortable_nonce(64) single:      8_191_835 ops/s
-strong_rand_bytes(8) multi:     4_859_998 ops/s
-strong_rand_bytes(12) multi:    4_856_265 ops/s
-strong_rand_bytes(16) multi:    4_807_786 ops/s
-strong_rand_bytes(8) single:    2_731_625 ops/s
-strong_rand_bytes(12) single:   2_723_526 ops/s
-strong_rand_bytes(16) single:   2_723_058 ops/s
-encrypted_nonce(128) single:    2_446_565 ops/s
-encrypted_nonce(64) single:     1_209_200 ops/s
-encrypted_nonce(96) single:     1_118_734 ops/s
+nonce(128)                4 tasks      71_480_221 ops/s
+nonce(96)                 4 tasks      71_026_121 ops/s
+nonce(64)                 4 tasks      65_193_581 ops/s
+sortable_nonce(128)       4 tasks      64_257_168 ops/s
+sortable_nonce(96)        4 tasks      62_381_363 ops/s
+nonce(128)                1 task       59_963_750 ops/s
+nonce(96)                 1 task       45_250_223 ops/s
+nonce(128)               16 tasks      38_430_576 ops/s <- contention?
+nonce(96)                16 tasks      38_009_613 ops/s <- contention?
+nonce(64)                16 tasks      37_882_988 ops/s <- contention?
+sortable_nonce(96)       16 tasks      35_498_696 ops/s <- contention?
+sortable_nonce(128)      16 tasks      35_017_229 ops/s <- contention?
+nonce(64)                 1 task       24_068_163 ops/s
+sortable_nonce(128)       1 task       22_222_475 ops/s
+sortable_nonce(96)        1 task       20_848_971 ops/s
+encrypted_nonce(128)     16 tasks      16_528_379 ops/s
+encrypted_nonce(64)      16 tasks       9_833_709 ops/s
+encrypted_nonce(96)      16 tasks       9_347_739 ops/s
+encrypted_nonce(128)      4 tasks       8_390_814 ops/s
+sortable_nonce(64)       16 tasks       8_192_220 ops/s <- throttled
+sortable_nonce(64)        1 task        8_191_842 ops/s <- throttled
+sortable_nonce(64)        4 tasks       8_192_027 ops/s <- throttled
+strong_rand_bytes(16)     4 tasks       7_118_412 ops/s
+strong_rand_bytes(8)      4 tasks       7_109_144 ops/s
+strong_rand_bytes(12)     4 tasks       7_037_436 ops/s
+encrypted_nonce(64)       4 tasks       4_394_582 ops/s
+encrypted_nonce(96)       4 tasks       4_053_274 ops/s
+strong_rand_bytes(8)      1 task        2_725_915 ops/s
+strong_rand_bytes(16)     1 task        2_705_110 ops/s
+strong_rand_bytes(12)     1 task        2_666_742 ops/s
+encrypted_nonce(128)      1 task        2_388_358 ops/s
+encrypted_nonce(64)       1 task        1_216_054 ops/s
+encrypted_nonce(96)       1 task        1_127_631 ops/s
 ```
 
 Some things of note:
 
-- NoNoncense nonces generate much faster than random binaries.
-- All methods are quick enough to handle very high peak loads.
-- The plain (counter) nonce generation rate is hardly influenced by multithreading and seems to hit a bottleneck of some kind, probably to do with `:persistent_term` or `:atomics`. Still, it hits a really high rate.
-- Encrypting the nonce exacts a very hefty penalty, but parallellization scales well to alleviate the issue.
-- Triple DES sucks.
+- NoNoncense nonces generate much faster than random binaries (and guarantee uniqueness).
+- The plain (counter) nonce generation rate is extremely high, even with a single thread. Multithreading improves performance mainly for 64-bits nonces.
+- Increasing the thread count starts to reduce plaintext nonce performance at some point (it's better to scale the number of nodes). Generation rates seem to hit a bottleneck of some kind, probably to do with `:atomics` contention.
+- Encrypting the nonce exacts a very hefty performance penalty, but parallellization scales well to alleviate the issue. Although to hit rates of 16M ops/s, the machine can't do anything other than generate nonces, which is probably not ideal. For scenarios where a less ridiculous generation rate is required (almost all real-world scenarios), this will not be an issue.
+- 3DES (64/96-bits encrypted nonces) scales much worse than AES (128-bits encrypted nonces).
