@@ -19,15 +19,15 @@ defmodule NoNoncense.Constants do
       @count_bits_96 96 - @ts_bits - @id_bits
       # max value of 64-bits nonce counter
       @max_count_64 Integer.pow(2, @count_bits_64)
-      # no of cycle counter bits in the :atomics counter of a 64-bits nonce
-      @atomic_cycle_bits_64 64 - @count_bits_64
-      # no of cycle counter bits in the :atomics counter of a 96-bits nonce
-      @atomic_cycle_bits_96 64 - @count_bits_96
+      # no of counter bits in the :atomics counter of a 96-bits nonce
+      @atomic_count_bits_96 64 - @ts_bits
       # no of padding bits in a 128-bits nonce
       @padding_bits_128 128 - @ts_bits - @id_bits - 64
 
-      @counter_idx 1
-      @sortable_counter_idx 2
+      @counter_64_idx 1
+      @counter_96_idx 2
+      @counter_128_idx 3
+      @sortable_counter_idx 4
     end
   end
 end

@@ -101,8 +101,9 @@ defmodule NoNoncenseTest do
 
     test "count wraps and timestamp increases on cycle limit wrap" do
       state = :persistent_term.get(@name)
-      {_, _, _, counter_ref} = state
-      :atomics.put(counter_ref, 1, @max_count_64 - 2)
+      {_, init_at, _, counter_ref} = state
+      <<new_val::64>> = <<0::@id_bits, init_at::@ts_bits, @max_count_64 - 2::@count_bits_64>>
+      :atomics.put(counter_ref, @counter_64_idx, new_val)
 
       nonce1 = NoNoncense.nonce(@name, 64)
       nonce1_info = nonce_info(nonce1, @name)
@@ -125,8 +126,9 @@ defmodule NoNoncenseTest do
 
       # jump to cycle #99, which should not generate nonces until 99ms have passed
       cycle_count = 99
-      :atomics.put(counter_ref, 1, @max_count_64 * cycle_count - 5)
       not_before = init_at + cycle_count
+      <<new_val::64>> = <<0::@id_bits, not_before::@ts_bits, @max_count_64 - 5::@count_bits_64>>
+      :atomics.put(counter_ref, @counter_64_idx, new_val)
 
       1..10
       |> Enum.map(fn _ ->
@@ -149,10 +151,14 @@ defmodule NoNoncenseTest do
       |> Enum.sort_by(& &1.info.total_count)
       |> Enum.each(fn %{post: post, info: info} ->
         nonce_n = info.total_count - cycle_count * @max_count_64
+        post_dt = post |> NoNoncense.to_unix_ms(time_offset) |> DateTime.from_unix!(:millisecond)
+
+        not_before_dt =
+          not_before |> NoNoncense.to_unix_ms(time_offset) |> DateTime.from_unix!(:millisecond)
 
         if info.cycle == cycle_count do
           assert post >= not_before,
-                 "nonce #{nonce_n} was generated at #{post} before it should have been at #{not_before}"
+                 "nonce #{nonce_n} was generated at #{post_dt} before it should have been at #{not_before_dt}"
         end
       end)
     end
@@ -180,9 +186,10 @@ defmodule NoNoncenseTest do
 
     test "count wraps and timestamp increases on cycle limit wrap" do
       state = :persistent_term.get(@name)
-      {_, _, _, counter_ref} = state
-      cycle_size = Integer.pow(2, @count_bits_96)
-      :atomics.put(counter_ref, 1, cycle_size - 2)
+      {_, init_at, _, counter_ref} = state
+      cycle_size = Integer.pow(2, @non_ts_bits_64)
+      <<new_val::64>> = <<init_at::@ts_bits, cycle_size - 2::@non_ts_bits_64>>
+      :atomics.put(counter_ref, @counter_96_idx, new_val)
 
       nonce1 = NoNoncense.nonce(@name, 96)
       nonce1_info = nonce_info(nonce1, @name)

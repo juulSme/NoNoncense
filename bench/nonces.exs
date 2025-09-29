@@ -7,6 +7,9 @@ NoNoncense.init(machine_id: 0, epoch: DateTime.to_unix(~U[1900-01-01T10:00:00Z],
 one_day = 24 * 60 * 60 * 1000
 :persistent_term.put(NoNoncense, {machine_id, init_at - one_day, time_offset, counters_ref})
 
+<<new_value::64>> = <<init_at - one_day::51, 0::13>>
+:atomics.put(counters_ref, 1, new_value - 1)
+
 key128 = :crypto.strong_rand_bytes(32)
 key192 = :crypto.strong_rand_bytes(24)
 
