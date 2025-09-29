@@ -256,6 +256,7 @@ defmodule NoNoncense do
       <<162, 10, 94, 4, 91, 56, 147, 198, 46, 87, 142, 197, 128, 41, 79, 209>>
   """
   @spec encrypted_nonce(atom(), nonce_size(), binary()) :: nonce()
+  @compile {:inline, encrypted_nonce: 3}
   def encrypted_nonce(name \\ __MODULE__, bit_size, key)
 
   def encrypted_nonce(name, 64, key = <<_::192>>) do
@@ -340,6 +341,8 @@ defmodule NoNoncense do
   ###########
   # Private #
   ###########
+
+  @compile {:inline, wait_until: 2, time_from_offset: 1, to_nonce: 4}
 
   defp wait_until(timestamp, time_offset) do
     now = time_from_offset(time_offset)
