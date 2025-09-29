@@ -1,5 +1,6 @@
 tasks = 4
-NoNoncense.init(machine_id: 0)
+# with a long-ago epoch, we force a worst-case scenario with bigger-number arithmetic
+NoNoncense.init(machine_id: 0, epoch: DateTime.to_unix(~U[1900-01-01T10:00:00Z], :millisecond))
 
 # artifially set back the clock, so that 64-bits nonces don't hit their time-based rate limit
 {machine_id, init_at, time_offset, counters_ref} = :persistent_term.get(NoNoncense)
