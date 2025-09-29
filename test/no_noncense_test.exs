@@ -1,5 +1,6 @@
 defmodule NoNoncenseTest do
   use ExUnit.Case, async: true
+  use NoNoncense.Constants
   import ExUnit.CaptureLog
 
   @name :test_nonce_factory
@@ -9,10 +10,10 @@ defmodule NoNoncenseTest do
     {_, init_at, time_offset, _} = :persistent_term.get(name)
 
     size = bit_size(nonce)
-    count_size = size - 42 - 9
+    count_size = size - @ts_bits - @id_bits
     cycle_size = Integer.pow(2, min(64, count_size))
 
-    <<timestamp::42, machine_id::9, count::size(count_size)>> = nonce
+    <<timestamp::@ts_bits, machine_id::@id_bits, count::size(count_size)>> = nonce
 
     cycle = timestamp - init_at
     total_count = cycle * cycle_size + count
@@ -53,7 +54,8 @@ defmodule NoNoncenseTest do
 
     test "warns on imminent timestamp overflow" do
       long_ago =
-        System.system_time(:millisecond) - Integer.pow(2, 42) + 1 * 24 * 60 * 60 * 1000 + 60_000
+        System.system_time(:millisecond) - Integer.pow(2, @ts_bits) + 1 * 24 * 60 * 60 * 1000 +
+          60_000
 
       {_, msg} =
         with_log(fn ->
@@ -64,7 +66,7 @@ defmodule NoNoncenseTest do
     end
 
     test "raises on timestamp overflow" do
-      long_ago = System.system_time(:millisecond) - Integer.pow(2, 42) - 1000
+      long_ago = System.system_time(:millisecond) - Integer.pow(2, @ts_bits) - 1000
 
       assert_raise RuntimeError, "timestamp overflow", fn ->
         NoNoncense.init(machine_id: 0, name: @name, epoch: long_ago)
@@ -98,10 +100,9 @@ defmodule NoNoncenseTest do
     end
 
     test "count wraps and timestamp increases on cycle limit wrap" do
-      %{cycle_size: cycle_size} = NoNoncense.nonce(@name, 64) |> nonce_info(@name)
       state = :persistent_term.get(@name)
       {_, _, _, counter_ref} = state
-      :atomics.put(counter_ref, 1, cycle_size - 2)
+      :atomics.put(counter_ref, 1, @max_count_64 - 2)
 
       nonce1 = NoNoncense.nonce(@name, 64)
       nonce1_info = nonce_info(nonce1, @name)
@@ -109,7 +110,7 @@ defmodule NoNoncenseTest do
       nonce2 = NoNoncense.nonce(@name, 64)
       nonce2_info = nonce_info(nonce2, @name)
 
-      assert nonce1_info.count == cycle_size - 1
+      assert nonce1_info.count == @max_count_64 - 1
       assert nonce2_info.count == 0
 
       assert nonce1_info.cycle == 0
@@ -119,13 +120,12 @@ defmodule NoNoncenseTest do
     end
 
     test "nonce's can't predate their timestamp" do
-      %{cycle_size: cycle_size} = NoNoncense.nonce(@name, 64) |> nonce_info(@name)
       state = :persistent_term.get(@name)
       {_machine_id, init_at, time_offset, counter_ref} = state
 
       # jump to cycle #99, which should not generate nonces until 99ms have passed
       cycle_count = 99
-      :atomics.put(counter_ref, 1, cycle_size * cycle_count - 5)
+      :atomics.put(counter_ref, 1, @max_count_64 * cycle_count - 5)
       not_before = init_at + cycle_count
 
       1..10
@@ -148,7 +148,7 @@ defmodule NoNoncenseTest do
       |> Task.await_many()
       |> Enum.sort_by(& &1.info.total_count)
       |> Enum.each(fn %{post: post, info: info} ->
-        nonce_n = info.total_count - cycle_count * cycle_size
+        nonce_n = info.total_count - cycle_count * @max_count_64
 
         if info.cycle == cycle_count do
           assert post >= not_before,
@@ -179,9 +179,9 @@ defmodule NoNoncenseTest do
     end
 
     test "count wraps and timestamp increases on cycle limit wrap" do
-      %{cycle_size: cycle_size} = NoNoncense.nonce(@name, 96) |> nonce_info(@name)
       state = :persistent_term.get(@name)
       {_, _, _, counter_ref} = state
+      cycle_size = Integer.pow(2, @count_bits_96)
       :atomics.put(counter_ref, 1, cycle_size - 2)
 
       nonce1 = NoNoncense.nonce(@name, 96)

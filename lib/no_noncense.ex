@@ -115,21 +115,9 @@ defmodule NoNoncense do
   """
   require Logger
 
-  @no_noncense_epoch ~U[2025-01-01T00:00:00Z] |> DateTime.to_unix(:millisecond)
-  @one_day_ms 24 * 60 * 60 * 1000
-  @ts_bits 42
-  @id_bits 9
-  @non_ts_bits_64 64 - @ts_bits
-  @machine_id_limit Integer.pow(2, @id_bits) - 1
-  @count_bits_64 @non_ts_bits_64 - @id_bits
-  @cycle_size_64 Integer.pow(2, min(64, @count_bits_64))
-  @atomic_cycle_bits_64 64 - @count_bits_64
-  @count_bits_96 96 - @ts_bits - @id_bits
-  @atomic_cycle_bits_96 64 - @count_bits_96
-  @padding_bits_128 128 - @ts_bits - @id_bits - 64
+  use __MODULE__.Constants
 
-  @counter_idx 1
-  @sortable_counter_idx 2
+  @one_day_ms 24 * 60 * 60 * 1000
 
   @type nonce_size :: 64 | 96 | 128
   @type nonce :: <<_::64>> | <<_::96>> | <<_::128>>
@@ -317,7 +305,7 @@ defmodule NoNoncense do
       end
     else
       # larger nonce sizes will not overflow their >= 2^45 bits counters
-      if bit_size == 64 and new_count >= @cycle_size_64 do
+      if bit_size == 64 and new_count >= @max_count_64 do
         sortable_nonce(name, bit_size)
       else
         to_nonce(now, machine_id, new_count, bit_size)
