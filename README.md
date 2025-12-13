@@ -10,7 +10,7 @@ Nonces are unique values that are generated once and never repeated within your 
 - **Deduplication**: Identify and prevent duplicate operations or messages in distributed systems
 - **API Request Tracking**: Uniquely identify API requests for idempotency and debugging
 
-Nonces come in multiple varians:
+Nonces come in multiple variants:
 
 - counter nonces that are unique but predictable and can be generated incredibly quickly
 - sortable nonces ([Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID)) that have an accurate creation timestamp in their first bits
