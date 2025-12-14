@@ -4,11 +4,9 @@ Generate locally unique nonces (number-only-used-once) in distributed Elixir.
 
 Nonces are unique values that are generated once and never repeated within your system. They have many practical uses including:
 
-- **ID Generation**: Create unique identifiers for database records, entities, or resources across distributed systems
-- **Sortable IDs**: Generate Snowflake-style IDs that can be ordered by creation time, useful for timelines, event logs, and data partitioning
+- **ID Generation**: Create unique identifiers for database records, API requests, or any other resource in distributed systems
 - **Cryptographic Operations**: Serve as initialization vectors (IVs) for encryption algorithms, ensuring security in block cipher modes
 - **Deduplication**: Identify and prevent duplicate operations or messages in distributed systems
-- **API Request Tracking**: Uniquely identify API requests for idempotency and debugging
 
 Nonces come in multiple variants:
 
