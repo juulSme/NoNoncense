@@ -2,7 +2,13 @@
 
 Generate locally unique nonces (number-only-used-once) in distributed Elixir.
 
-Nonces come in multiple varians:
+Nonces are unique values that are generated once and never repeated within your system. They have many practical uses including:
+
+- **ID Generation**: Create unique identifiers for database records, API requests, or any other resource in distributed systems
+- **Cryptographic Operations**: Serve as initialization vectors (IVs) for encryption algorithms, ensuring security in block cipher modes
+- **Deduplication**: Identify and prevent duplicate operations or messages in distributed systems
+
+Nonces come in multiple variants:
 
 - counter nonces that are unique but predictable and can be generated incredibly quickly
 - sortable nonces ([Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID)) that have an accurate creation timestamp in their first bits
