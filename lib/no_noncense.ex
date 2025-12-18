@@ -4,6 +4,10 @@ defmodule NoNoncense do
 
   Locally unique means that the nonces are unique within your application/database/domain, as opposed to globally unique nonces that are unique across applications/databases/domains, like UUIDs.
 
+  > #### Read the migration guide {: .warning}
+  >
+  > If you're upgrading from v0.x.x and you use encrypted nonces, please read the [Migration Guide](MIGRATION.md) carefully - there are breaking changes that require attention to preserve uniqueness guarantees.
+
   ## Nonce types
 
   Several types of nonces can be generated, although they share their basic composition. The first 42 bits are a millisecond-precision timestamp (allows for ~139 years of operation), relative to the NoNoncense epoch (2025-01-01 00:00:00 UTC) by default. The next 9 bits are the machine ID (allows for 512 machines). The remaining bits are a per-machine counter.
@@ -41,6 +45,10 @@ defmodule NoNoncense do
 
   These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. For more info, see [nonce encryption](#module-nonce-encryption).
 
+  > #### Don't change the key or cipher {: .warning}
+  >
+  > Once you are using a cipher and a key, you **must not** change them. Doing so breaks the uniqueness guarantees. The only way to change either one of these, is by regenerating / invalidating all previously generated encrypted nonces.
+
   ## Usage
 
   Note that `NoNoncense` is not a GenServer. Instead it stores its initial state using `m::persistent_term` and its internal counter using `m::atomics`. Because `m::persistent_term` triggers a garbage collection cycle on writes, it is recommended to initialize your `NoNoncense` instance(s) at application start, when there is hardly any garbage to collect.
@@ -52,7 +60,8 @@ defmodule NoNoncense do
 
         def start(_type, _args) do
           machine_id = NoNoncense.MachineId.id!(node_list: [:"myapp@127.0.0.1"])
-          :ok = NoNoncense.init(machine_id: machine_id)
+          # base_key is required for encrypted nonces
+          :ok = NoNoncense.init(machine_id: machine_id, base_key: :crypto.strong_rand_bytes(32))
 
           children =
             [
@@ -79,9 +88,9 @@ defmodule NoNoncense do
 
       # generate encrypted nonces
       # be sure to read the NoNoncense docs before using 64/96 bits encrypted nonces
-      iex> <<_::64>> = NoNoncense.encrypted_nonce(64, :crypto.strong_rand_bytes(24))
-      iex> <<_::96>> = NoNoncense.encrypted_nonce(96, :crypto.strong_rand_bytes(24))
-      iex> <<_::128>> = NoNoncense.encrypted_nonce(128, :crypto.strong_rand_bytes(32))
+      iex> <<_::64>> = NoNoncense.encrypted_nonce(64)
+      iex> <<_::96>> = NoNoncense.encrypted_nonce(96)
+      iex> <<_::128>> = NoNoncense.encrypted_nonce(128)
 
 
   ## Uniqueness guarantees
@@ -99,20 +108,23 @@ defmodule NoNoncense do
 
   > Counters and LFSRs are both acceptable ways of generating unique nonces, as is encrypting a counter using a block cipher with a 64-bit block size such as DES. Note that it is not acceptable to use a truncation of a counter encrypted with block ciphers with 128-bit or 256-bit blocks, because such a truncation may repeat after a short time.
 
-  There are some interesting things to unpick there. Why can't we use higher ciphers with a larger block size? As it turns out, block ciphers only generate unique outputs for inputs of at least their block size (128 bits for most modern ciphers, notably AES). For example, encrypting a 64-bit nonce with AES would produce a unique 128-bit ciphertext, but that ciphertext can't be reduced back to 64 bits without losing the uniqueness property. Sadly, this also holds for the streaming modes of these ciphers, which still use blocks internally to generate the keystream. That means we can just use AES256 ECB (we only encrypt one block) for 128-bit nonces.
+  There are some interesting things to unpick there. Why can't we use higher ciphers with a larger block size? As it turns out, block ciphers only generate unique outputs for inputs of at least their block size (128 bits for most modern ciphers, notably AES). For example, encrypting a 64-bit nonce with AES would produce a unique 128-bit ciphertext, but that ciphertext can't be reduced back to 64 bits without losing the uniqueness property. Sadly, this also holds for the streaming modes of these ciphers, which still use blocks internally to generate the keystream. That means we can just use AES256 ECB (we only encrypt unique blocks) for 128-bit nonces.
 
   > #### 128-bit encrypted nonces {: .tip}
   >
   > We have AES256-encrypted 128-bit nonces that are unique and indistinguishable from random noise.
 
-  However, for 64-bit nonces we are limited to block ciphers with 64-bit block sizes. There are only a few of those in OTP's `m::crypto` module, namely DES, 3DES, and BlowFish. DES is broken and can merely be considered obfuscation at this point, despite the IETF quote (from 2018). BlowFish performs atrociously in the OTP implementation (~30 times worse than AES, dropping from ~1.8M ops/s to 60K ops/s) to the point where it can realistically form a bottleneck. 3DES seems like the least worst option, and practical attacks on it are mainly aimed at block collisions (within a message) which doesn't apply here. Still, it's old.
+  For 64/96 bits nonces we need a block cipher that operates on matching block sizes, which are exceedingly rare. One such cipher is Speck, designed by the NSA in 2013 for lightweight encryption. The optional dependency `SpeckEx`, backed by (precompiled) Rust crate `speck_cipher`, enables support for it. It is very fast, bringing performance in line with hardware-accelerated AES. Speck support should be considered experimental at this point, since the backing Rust dependency is in a pre-release state, it isn't audited and neither is `SpeckEx` itself.
 
-  For 96-bit nonces there are no block ciphers whatsoever to choose from. All we can do is generate a 64-bits nonce and postfix 4 zero-bytes. That way the nonce is unique, and while the last 4 bytes are predictable, the nonce as a whole is not and no message ordering information leaks.
+  If you only want to use OTP ciphers, we are limited to DES, 3DES, and BlowFish. DES is broken and can merely be considered obfuscation at this point, despite the IETF quote (from 2018). 3DES is slow (it is still offered for backwards compatibility). Blowfish performs well after initial key expansion, and is secure since we don't have to worry about the birthday attack (all of our input blocks are unique, so all of our output blocks are unique, so there will be no collisions).
+
+  For 96-bit nonces there are no block ciphers whatsoever to choose from in OTP. All we can do is generate a 64-bits encrypted nonce and postfix 32 zero-bits. That way the whole nonce is unique, despite the predictable tail. You should determine for yourself if you can live with that. The only other option, and the main reason it was added, is using `SpeckEx`, because Speck has a 96-bits variant that encrypts the entire nonce.
 
   > #### 64/96-bit encrypted nonces {: .info}
   >
-  > We have 3DES-encrypted 64/96-bit nonces, which is probably good enough.
+  > We have either Speck, Blowfish or 3DES encrypted nonces. Speck offers the best security and performance, but is experimental right now. Of the OTP ciphers, the default Blowfish is fast and secure. For 96-bits nonces, using OTP's Blowfish or 3DES results in a padded 64-bits encrypted nonce, which may or may not be good enough for your use case. If it is not, your only option is using Speck.
   """
+  alias NoNoncense.Crypto
   require Logger
 
   use __MODULE__.Constants
@@ -132,6 +144,13 @@ defmodule NoNoncense do
     * `:machine_id` - machine ID of the node
     * `:name` - The name of the nonce factory (default: module name).
     * `:epoch` - Override the configured epoch for this factory instance. Defaults to the NoNoncense epoch (2025-01-01 00:00:00Z).
+    * `:base_key` - A 256-bit (32 bytes) key used to derive encryption keys for all nonce sizes.
+    * `:key64` - Override the derived key for 64-bit nonces.
+    * `:key96` - Override the derived key for 96-bit nonces.
+    * `:key128` - Override the derived key for 128-bit nonces.
+    * `:cipher64` - The cipher for 64-bit nonces (`:blowfish`, `:speck`, or `:des3`). Defaults to `:blowfish`.
+    * `:cipher96` - The cipher for 96-bit nonces (`:blowfish`, `:speck`, or `:des3`). Defaults to `:blowfish`.
+    * `:cipher128` - The cipher for 128-bit nonces (`:aes` or `:speck`). Defaults to `:aes`.
 
   ## Examples
 
@@ -147,6 +166,7 @@ defmodule NoNoncense do
     epoch = opts[:epoch] || @no_noncense_epoch
     machine_id = Keyword.fetch!(opts, :machine_id)
 
+    # check machine ID
     if machine_id < 0 or machine_id > @machine_id_limit,
       do: raise(ArgumentError, "machine ID out of range 0-#{@machine_id_limit}")
 
@@ -154,6 +174,7 @@ defmodule NoNoncense do
     time_offset = System.time_offset(:millisecond) - epoch
     init_at = time_from_offset(time_offset)
 
+    # verify timestamp does not overflow
     timestamp_overflow = Integer.pow(2, @ts_bits)
     if init_at >= timestamp_overflow, do: raise(RuntimeError, "timestamp overflow")
     days_until_overflow = div(timestamp_overflow - init_at, @one_day_ms)
@@ -161,12 +182,17 @@ defmodule NoNoncense do
     if days_until_overflow <= 365,
       do: Logger.warning("timestamp overflow in #{days_until_overflow} days")
 
+    # initialize nonce counters
     counters_ref = :atomics.new(2, signed: false)
     # the counter will overflow to 0 on the first nonce generation
     :atomics.put(counters_ref, @counter_idx, Integer.pow(2, 64) - 1)
     :atomics.put(counters_ref, @sortable_counter_idx, init_at)
 
-    state = {machine_id, init_at, time_offset, counters_ref}
+    # initialize encryption keys
+    ciphers = Crypto.init(opts)
+
+    # build and store the state
+    state = {machine_id, init_at, time_offset, counters_ref, ciphers}
     :ok = :persistent_term.put(name, state)
   end
 
@@ -187,9 +213,14 @@ defmodule NoNoncense do
   @spec nonce(atom(), nonce_size()) :: nonce()
   def nonce(name \\ __MODULE__, bit_size)
 
-  def nonce(name, 64) do
-    {machine_id, init_at, time_offset, counters_ref} = :persistent_term.get(name)
+  def nonce(name, bit_size) do
+    {machine_id, init_at, time_offset, counters_ref, _} = :persistent_term.get(name)
+    gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, bit_size)
+  end
 
+  defp gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, bit_size)
+
+  defp gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 64) do
     # we can generate 10B nonce/s for 60 years straight before the unsigned 64-bits int overflows
     # so we don't need to worry about the atomic counter itself overflowing
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
@@ -208,20 +239,14 @@ defmodule NoNoncense do
     to_nonce(timestamp, machine_id, count, 64)
   end
 
-  def nonce(name, 96) do
-    {machine_id, init_at, _, counters_ref} = :persistent_term.get(name)
-
+  defp gen_ctr_nonce(machine_id, init_at, _time_offset, counters_ref, 96) do
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
     <<cycle_n::@atomic_cycle_bits_96, count::@count_bits_96>> = <<atomic_count::64>>
-
     to_nonce(init_at + cycle_n, machine_id, count, 96)
   end
 
-  def nonce(name, 128) do
-    {machine_id, init_at, _, counters_ref} = :persistent_term.get(name)
-
+  defp gen_ctr_nonce(machine_id, init_at, _time_offset, counters_ref, 128) do
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
-
     to_nonce(init_at, machine_id, atomic_count, 128)
   end
 
@@ -230,37 +255,65 @@ defmodule NoNoncense do
 
   For more info, see [nonce encryption](#module-nonce-encryption).
 
-      iex> key = :crypto.strong_rand_bytes 24
-      <<76, 201, 87, 221, 39, 41, 231, 66, 80, 199, 18, 164, 248, 5, 92, 42, 246, 73,
-        151, 198, 51, 190, 81, 82>>
-      iex> NoNoncense.encrypted_nonce(64, key)
+      iex> NoNoncense.init(machine_id: 1, base_key: :crypto.strong_rand_bytes(32))
+      :ok
+      iex> NoNoncense.encrypted_nonce(64)
       <<50, 231, 215, 98, 233, 96, 157, 205>>
-      iex> NoNoncense.encrypted_nonce(96, key)
+      iex> NoNoncense.encrypted_nonce(96)
       <<6, 138, 218, 96, 131, 136, 51, 242, 0, 0, 0, 0>>
-      iex> key = :crypto.strong_rand_bytes 32
-      <<175, 189, 46, 130, 235, 88, 83, 220, 44, 179, 255, 75, 255, 212, 9, 148, 53,
-        211, 157, 137, 52, 48, 247, 155, 222, 130, 70, 227, 57, 89, 137, 171>>
-      iex> NoNoncense.encrypted_nonce(128, key)
+      iex> NoNoncense.encrypted_nonce(128)
       <<162, 10, 94, 4, 91, 56, 147, 198, 46, 87, 142, 197, 128, 41, 79, 209>>
   """
-  @spec encrypted_nonce(atom(), nonce_size(), binary()) :: nonce()
-  @compile {:inline, encrypted_nonce: 3}
-  def encrypted_nonce(name \\ __MODULE__, bit_size, key)
+  @spec encrypted_nonce(atom(), nonce_size()) :: nonce()
+  def encrypted_nonce(name \\ __MODULE__, bit_size)
 
-  def encrypted_nonce(name, 64, key = <<_::192>>) do
-    nonce = nonce(name, 64)
-    # CBC with all-zero IV = ECB can safely be used here because we only encrypt one block
-    :crypto.crypto_one_time(:des_ede3_cbc, key, <<0::64>>, nonce, true)
+  def encrypted_nonce(name, 64) do
+    {machine_id, init_at, time_offset, counters_ref, {cipher64, _, _}} =
+      :persistent_term.get(name)
+
+    nonce = gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 64)
+
+    case cipher64 do
+      {:speck, cipher64} -> Crypto.speck64(nonce, cipher64)
+      {:blowfish, cipher64} -> :crypto.crypto_update(cipher64, nonce)
+      {:des3, key} -> des_encrypt(nonce, key)
+      nil -> raise "no key set at NoNoncense initialization"
+    end
   end
 
-  def encrypted_nonce(name, 96, key = <<_::192>>) do
-    <<encrypted_nonce(name, 64, key)::bits, 0::32>>
+  def encrypted_nonce(name, 96) do
+    {machine_id, init_at, time_offset, counters_ref, {_, cipher96, _}} =
+      :persistent_term.get(name)
+
+    case cipher96 do
+      {:speck, cipher96} ->
+        gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 96)
+        |> Crypto.speck96(cipher96)
+
+      {:blowfish, cipher64} ->
+        nonce = gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 64)
+        :crypto.crypto_update(cipher64, nonce) <> <<0::32>>
+
+      {:des3, key} ->
+        nonce = gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 64)
+        des_encrypt(nonce, key) <> <<0::32>>
+
+      nil ->
+        raise "no key set at NoNoncense initialization"
+    end
   end
 
-  def encrypted_nonce(name, 128, key = <<_::256>>) do
-    nonce = nonce(name, 128)
-    # ECB can safely be used here because we only encrypt one block
-    :crypto.crypto_one_time(:aes_256_ecb, key, nonce, true)
+  def encrypted_nonce(name, 128) do
+    {machine_id, init_at, time_offset, counters_ref, {_, _, cipher128}} =
+      :persistent_term.get(name)
+
+    nonce = gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 128)
+
+    case cipher128 do
+      {:aes, cipher128} -> :crypto.crypto_update(cipher128, nonce)
+      {:speck, cipher128} -> Crypto.speck128(nonce, cipher128)
+      nil -> raise "no key set at NoNoncense initialization"
+    end
   end
 
   @doc """
@@ -285,7 +338,7 @@ defmodule NoNoncense do
   """
   @spec sortable_nonce(atom(), nonce_size()) :: nonce()
   def sortable_nonce(name \\ __MODULE__, bit_size) when bit_size in [64, 96, 128] do
-    {machine_id, _init_at, time_offset, counters_ref} = :persistent_term.get(name)
+    {machine_id, _init_at, time_offset, counters_ref, _} = :persistent_term.get(name)
 
     ts_counter = :atomics.add_get(counters_ref, @sortable_counter_idx, 1)
     # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, we can assume no overflow
@@ -319,7 +372,7 @@ defmodule NoNoncense do
   """
   @spec get_datetime(atom(), nonce()) :: DateTime.t()
   def get_datetime(name \\ __MODULE__, nonce) do
-    {_, _init_at, time_offset, _} = :persistent_term.get(name)
+    {_, _init_at, time_offset, _, _} = :persistent_term.get(name)
     <<timestamp::@ts_bits, _::bits>> = nonce
     epoch = System.time_offset(:millisecond) - time_offset
     timestamp = timestamp + epoch
@@ -351,5 +404,10 @@ defmodule NoNoncense do
 
   defp to_nonce(timestamp, machine_id, count, 128) do
     <<timestamp::@ts_bits, machine_id::@id_bits, 0::@padding_bits_128, count::64>>
+  end
+
+  @compile {:inline, des_encrypt: 2}
+  defp des_encrypt(nonce, key) do
+    :crypto.crypto_one_time(:des_ede3_cbc, key, <<0::64>>, nonce, true)
   end
 end

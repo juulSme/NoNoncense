@@ -20,10 +20,11 @@ defmodule NoNoncense.MixProject do
       name: "NoNoncense",
       docs: [
         source_ref: ~s(main),
-        extras: ~w(./README.md ./LICENSE.md),
+        extras: ~w(./README.md ./CHANGELOG.md ./MIGRATION.md ./LICENSE.md),
         main: "NoNoncense",
         skip_undefined_reference_warnings_on: ~w()
-      ]
+      ],
+      test_ignore_filters: ["test/test_conflict_guard.ex"]
     ]
   end
 
@@ -38,7 +39,9 @@ defmodule NoNoncense.MixProject do
   defp deps do
     [
       {:ex_doc, "~> 0.36", only: [:dev, :test], runtime: false},
-      {:benchmark, github: "juulSme/benchmark_ex", only: [:dev, :test]}
+      {:benchmark, github: "juulSme/benchmark_ex", only: [:dev, :test]},
+      {:speck_ex, "~> 0.0.1-beta3", optional: true},
+      {:redix, "~> 1.0", optional: true, only: [:test]}
     ]
   end
 end

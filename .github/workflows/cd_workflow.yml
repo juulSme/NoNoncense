@@ -38,7 +38,6 @@ jobs:
           export NON_PREFIXED_VERSION="$(echo -n "$GITHUB_REF_NAME" | sed 's@v@@')"
           sed -i "s@~s(main)@~s($GITHUB_REF_NAME)@" mix.exs
           sed -i "s@0.0.0+development@$NON_PREFIXED_VERSION@" mix.exs
-          sed -i "s@~> 0.0.1@~> $NON_PREFIXED_VERSION@" README.md
       - name: Create docs
         run: mix docs
       - name: Publish release

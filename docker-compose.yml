@@ -1,0 +1,7 @@
+# only needed for the slow collision test
+services:
+  valkey:
+    image: valkey/valkey:9-trixie
+    command: valkey-server --save "" --appendonly no
+    ports:
+      - 6379:6379

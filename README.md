@@ -8,11 +8,15 @@ Nonces are unique values that are generated once and never repeated within your 
 - **Cryptographic Operations**: Serve as initialization vectors (IVs) for encryption algorithms, ensuring security in block cipher modes
 - **Deduplication**: Identify and prevent duplicate operations or messages in distributed systems
 
-Nonces come in multiple variants:
+Generate locally unique nonces (number-only-used-once) in distributed Elixir. Nonces come in multiple variants:
 
 - counter nonces that are unique but predictable and can be generated incredibly quickly
 - sortable nonces ([Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID)) that have an accurate creation timestamp in their first bits
 - encrypted nonces that are unique but unpredictable
+
+> #### Read the migration guide
+>
+> If you're upgrading from v0.x.x and you use encrypted nonces, please read the [Migration Guide](MIGRATION.md) carefully - there are breaking changes that require attention to preserve uniqueness guarantees.
 
 ## Installation
 
@@ -21,7 +25,7 @@ The package is hosted on [hex.pm](https://hex.pm/packages/no_noncense) and can b
 ```elixir
 def deps do
   [
-    {:no_noncense, "~> 0.0.1"}
+    {:no_noncense, "~> 1.0"}
   ]
 end
 ```
@@ -43,7 +47,8 @@ defmodule MyApp.Application do
   def start(_type, _args) do
     # grab your node_list from your application environment
     machine_id = NoNoncense.MachineId.id!(node_list: [:"myapp@127.0.0.1"])
-    :ok = NoNoncense.init(machine_id: machine_id)
+    # base_key is required for encrypted nonces
+    :ok = NoNoncense.init(machine_id: machine_id, base_key: :crypto.strong_rand_bytes(32))
 
     children =
       [
@@ -72,9 +77,9 @@ iex> <<_::128>> = NoNoncense.sortable_nonce(128)
 
 # generate encrypted nonces
 # be sure to read the NoNoncense docs before using 64/96 bits encrypted nonces
-iex> <<_::64>> = NoNoncense.encrypted_nonce(64, :crypto.strong_rand_bytes(24))
-iex> <<_::96>> = NoNoncense.encrypted_nonce(96, :crypto.strong_rand_bytes(24))
-iex> <<_::128>> = NoNoncense.encrypted_nonce(128, :crypto.strong_rand_bytes(32))
+iex> <<_::64>> = NoNoncense.encrypted_nonce(64)
+iex> <<_::96>> = NoNoncense.encrypted_nonce(96)
+iex> <<_::128>> = NoNoncense.encrypted_nonce(128)
 ```
 
 ## Benchmarks
@@ -122,5 +127,4 @@ Some things of note:
 - NoNoncense nonces generate much faster than random binaries (and guarantee uniqueness).
 - The plain (counter) nonce generation rate is extremely high, even with a single thread. Multithreading improves performance mainly for 64-bits nonces.
 - Increasing the thread count starts to reduce plaintext nonce performance at some point (it's better to scale the number of nodes). Generation rates seem to hit a bottleneck of some kind, probably to do with `:atomics` contention.
-- Encrypting the nonce exacts a very hefty performance penalty, but parallellization scales well to alleviate the issue. Although to hit rates of 16M ops/s, the machine can't do anything other than generate nonces, which is probably not ideal. For scenarios where a less ridiculous generation rate is required (almost all real-world scenarios), this will not be an issue.
-- 3DES (64/96-bits encrypted nonces) scales much worse than AES (128-bits encrypted nonces).
+- Nonce encryption exacts a performance penalty, but it is manageable and scales well with cores. AES performs exceedingly well and there's really no reason to use anything else for 128-bits nonces except on platforms without hardware acceleration. For 64/96-bits nonces, Blowfish is a good default that is available in OTP. For 96-bits nonces, Speck offers best security and performance. See the [NoNoncense](https://hexdocs.pm/no_noncense/NoNoncense.html#module-nonce-encryption) docs for more info.

@@ -25,3 +25,4 @@ no_noncense-*.tar
 /.elixir_ls
 /.vscode/*
 !/.vscode/*_example.json
+/no_noncense-*
