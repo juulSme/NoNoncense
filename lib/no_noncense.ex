@@ -213,14 +213,23 @@ defmodule NoNoncense do
   @spec nonce(atom(), nonce_size()) :: nonce()
   def nonce(name \\ __MODULE__, bit_size)
 
-  def nonce(name, bit_size) do
+  def nonce(name, 64) do
     {machine_id, init_at, time_offset, counters_ref, _} = :persistent_term.get(name)
-    gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, bit_size)
+    gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref)
   end
 
-  defp gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, bit_size)
+  def nonce(name, 96) do
+    {machine_id, init_at, time_offset, counters_ref, _} = :persistent_term.get(name)
+    gen_ctr_nonce_96(machine_id, init_at, time_offset, counters_ref)
+  end
 
-  defp gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 64) do
+  def nonce(name, 128) do
+    {machine_id, init_at, time_offset, counters_ref, _} = :persistent_term.get(name)
+    gen_ctr_nonce_128(machine_id, init_at, time_offset, counters_ref)
+  end
+
+  @compile {:inline, gen_ctr_nonce_64: 4, gen_ctr_nonce_96: 4, gen_ctr_nonce_128: 4}
+  defp gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref) do
     # we can generate 10B nonce/s for 60 years straight before the unsigned 64-bits int overflows
     # so we don't need to worry about the atomic counter itself overflowing
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
@@ -239,13 +248,13 @@ defmodule NoNoncense do
     to_nonce(timestamp, machine_id, count, 64)
   end
 
-  defp gen_ctr_nonce(machine_id, init_at, _time_offset, counters_ref, 96) do
+  defp gen_ctr_nonce_96(machine_id, init_at, _time_offset, counters_ref) do
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
     <<cycle_n::@atomic_cycle_bits_96, count::@count_bits_96>> = <<atomic_count::64>>
     to_nonce(init_at + cycle_n, machine_id, count, 96)
   end
 
-  defp gen_ctr_nonce(machine_id, init_at, _time_offset, counters_ref, 128) do
+  defp gen_ctr_nonce_128(machine_id, init_at, _time_offset, counters_ref) do
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
     to_nonce(init_at, machine_id, atomic_count, 128)
   end
@@ -271,7 +280,7 @@ defmodule NoNoncense do
     {machine_id, init_at, time_offset, counters_ref, {cipher64, _, _}} =
       :persistent_term.get(name)
 
-    nonce = gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 64)
+    nonce = gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref)
 
     case cipher64 do
       {:speck, cipher64} -> Crypto.speck64(nonce, cipher64)
@@ -287,16 +296,16 @@ defmodule NoNoncense do
 
     case cipher96 do
       {:speck, cipher96} ->
-        gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 96)
+        gen_ctr_nonce_96(machine_id, init_at, time_offset, counters_ref)
         |> Crypto.speck96(cipher96)
 
-      {:blowfish, cipher64} ->
-        nonce = gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 64)
-        :crypto.crypto_update(cipher64, nonce) <> <<0::32>>
+      {other, cipher_or_key} ->
+        nonce = gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref)
 
-      {:des3, key} ->
-        nonce = gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 64)
-        des_encrypt(nonce, key) <> <<0::32>>
+        case other do
+          :blowfish -> :crypto.crypto_update(cipher_or_key, nonce) <> <<0::32>>
+          :des3 -> des_encrypt(nonce, cipher_or_key) <> <<0::32>>
+        end
 
       nil ->
         raise "no key set at NoNoncense initialization"
@@ -307,7 +316,7 @@ defmodule NoNoncense do
     {machine_id, init_at, time_offset, counters_ref, {_, _, cipher128}} =
       :persistent_term.get(name)
 
-    nonce = gen_ctr_nonce(machine_id, init_at, time_offset, counters_ref, 128)
+    nonce = gen_ctr_nonce_128(machine_id, init_at, time_offset, counters_ref)
 
     case cipher128 do
       {:aes, cipher128} -> :crypto.crypto_update(cipher128, nonce)
