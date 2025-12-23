@@ -17,7 +17,7 @@ defmodule NoNoncense do
   - Features: unique.
   - Generation rate: very high.
   - Info leak: medium (machine init time, creation order).
-  - Crypto: technically suitable for block ciphers in modes that require an IV that is unique but not necessarily unpredictable (like CTR, OFB, CCM, and GCM), and some streaming ciphers. Only when some info leak is acceptable.
+  - Crypto: technically suitable for block ciphers in modes that require a nonce that is unique but not necessarily unpredictable (like CTR, OFB, CCM, and GCM), and some streaming ciphers. Only when some info leak is acceptable.
 
   Counter nonces are basically a counter that is initialized with the machine (node) start time. An overflow of a nonce's counter bits will trigger a timestamp increase by 1ms, implying that the timestamp effectively functions as an extended counter. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the timestamp catches up to the actual time.
 
@@ -47,7 +47,7 @@ defmodule NoNoncense do
 
   > #### Don't change the key or cipher {: .warning}
   >
-  > Once you are using a cipher and a key, you **must not** change them. Doing so breaks the uniqueness guarantees. The only way to change either one of these, is by regenerating / invalidating all previously generated encrypted nonces.
+  > Once you are using a cipher and a key, you **must never** change them. Doing so breaks the uniqueness guarantees of all encrypted nonces of the affected NoNoncense instance. The only way to change the key or the cipher is by regenerating / invalidating all previously generated encrypted nonces.
 
   ## Usage
 
@@ -61,7 +61,7 @@ defmodule NoNoncense do
         def start(_type, _args) do
           machine_id = NoNoncense.MachineId.id!(node_list: [:"myapp@127.0.0.1"])
           # base_key is required for encrypted nonces
-          :ok = NoNoncense.init(machine_id: machine_id, base_key: :crypto.strong_rand_bytes(32))
+          :ok = NoNoncense.init(machine_id: machine_id, base_key: System.get_env("BASE_KEY"))
 
           children =
             [
@@ -114,11 +114,11 @@ defmodule NoNoncense do
   >
   > We have AES256-encrypted 128-bit nonces that are unique and indistinguishable from random noise.
 
-  For 64/96 bits nonces we need a block cipher that operates on matching block sizes, which are exceedingly rare. One such cipher is Speck, designed by the NSA in 2013 for lightweight encryption. The optional dependency `SpeckEx`, backed by (precompiled) Rust crate `speck_cipher`, enables support for it. It is very fast, bringing performance in line with hardware-accelerated AES. Speck support should be considered experimental at this point, since the backing Rust dependency is in a pre-release state, it isn't audited and neither is `SpeckEx` itself.
+  For 64/96 bits nonces we need a block cipher that operates on matching block sizes, which are exceedingly rare. One such cipher is Speck, designed by the NSA in 2013 for lightweight encryption. The optional dependency `SpeckEx`, backed by (precompiled) Rust crate `speck_cipher`, enables support for it. It is very fast; in line with hardware-accelerated AES. Be aware that SpeckEx should be considered experimental right now; it has not been reviewed or audited; although the primitive block cipher mode used by `NoNoncense` matches official test vectors.
 
   If you only want to use OTP ciphers, we are limited to DES, 3DES, and BlowFish. DES is broken and can merely be considered obfuscation at this point, despite the IETF quote (from 2018). 3DES is slow (it is still offered for backwards compatibility). Blowfish performs well after initial key expansion, and is secure since we don't have to worry about the birthday attack (all of our input blocks are unique, so all of our output blocks are unique, so there will be no collisions).
 
-  For 96-bit nonces there are no block ciphers whatsoever to choose from in OTP. All we can do is generate a 64-bits encrypted nonce and postfix 32 zero-bits. That way the whole nonce is unique, despite the predictable tail. You should determine for yourself if you can live with that. The only other option, and the main reason it was added, is using `SpeckEx`, because Speck has a 96-bits variant that encrypts the entire nonce.
+  For 96-bit nonces there are no block ciphers whatsoever to choose from in OTP. All we can do is generate a 64-bits encrypted nonce and postfix 32 zero-bits. That way the whole nonce is unique, despite the predictable tail. You should determine for yourself if you can live with that. The only other option, and the main reason it was added, is using `SpeckEx`, because Speck has a 96-bits variant that can encrypt a full 96-bits counter nonce, without needing any padding.
 
   > #### 64/96-bit encrypted nonces {: .info}
   >
@@ -141,7 +141,7 @@ defmodule NoNoncense do
 
   ## Options
 
-    * `:machine_id` - machine ID of the node
+    * `:machine_id` (required) - machine ID of the node
     * `:name` - The name of the nonce factory (default: module name).
     * `:epoch` - Override the configured epoch for this factory instance. Defaults to the NoNoncense epoch (2025-01-01 00:00:00Z).
     * `:base_key` - A 256-bit (32 bytes) key used to derive encryption keys for all nonce sizes.
@@ -151,6 +151,8 @@ defmodule NoNoncense do
     * `:cipher64` - The cipher for 64-bit nonces (`:blowfish`, `:speck`, or `:des3`). Defaults to `:blowfish`.
     * `:cipher96` - The cipher for 96-bit nonces (`:blowfish`, `:speck`, or `:des3`). Defaults to `:blowfish`.
     * `:cipher128` - The cipher for 128-bit nonces (`:aes` or `:speck`). Defaults to `:aes`.
+
+  The encryption-related options only affect `encrypted_nonce/2` nonces.
 
   ## Examples
 
@@ -260,7 +262,7 @@ defmodule NoNoncense do
   end
 
   @doc """
-  Generate a new nonce and encrypt it. This creates an unpredictable but still unique nonce.
+  Generate a new counter nonce and encrypt it. This creates an unpredictable but still unique nonce.
 
   For more info, see [nonce encryption](#module-nonce-encryption).
 
@@ -286,9 +288,11 @@ defmodule NoNoncense do
       {:speck, cipher64} -> Crypto.speck_enc(nonce, cipher64, :speck64_128)
       {:blowfish, cipher64} -> :crypto.crypto_update(cipher64, nonce)
       {:des3, key} -> des_encrypt(nonce, key)
-      nil -> raise "no key set at NoNoncense initialization"
+      nil -> raise RuntimeError, "no key set at NoNoncense initialization"
     end
   end
+
+  @pad_64_to_96 <<0::32>>
 
   def encrypted_nonce(name, 96) do
     {machine_id, init_at, time_offset, counters_ref, {_, cipher96, _}} =
@@ -303,12 +307,12 @@ defmodule NoNoncense do
         nonce = gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref)
 
         case other do
-          :blowfish -> :crypto.crypto_update(cipher_or_key, nonce) <> <<0::32>>
-          :des3 -> des_encrypt(nonce, cipher_or_key) <> <<0::32>>
+          :blowfish -> :crypto.crypto_update(cipher_or_key, nonce) <> @pad_64_to_96
+          :des3 -> des_encrypt(nonce, cipher_or_key) <> @pad_64_to_96
         end
 
       nil ->
-        raise "no key set at NoNoncense initialization"
+        raise RuntimeError, "no key set at NoNoncense initialization"
     end
   end
 
@@ -321,7 +325,7 @@ defmodule NoNoncense do
     case cipher128 do
       {:aes, cipher128} -> :crypto.crypto_update(cipher128, nonce)
       {:speck, cipher128} -> Crypto.speck_enc(nonce, cipher128, :speck128_256)
-      nil -> raise "no key set at NoNoncense initialization"
+      nil -> raise RuntimeError, "no key set at NoNoncense initialization"
     end
   end
 
@@ -415,8 +419,10 @@ defmodule NoNoncense do
     <<timestamp::@ts_bits, machine_id::@id_bits, 0::@padding_bits_128, count::64>>
   end
 
+  @des_iv <<0::64>>
+
   @compile {:inline, des_encrypt: 2}
   defp des_encrypt(nonce, key) do
-    :crypto.crypto_one_time(:des_ede3_cbc, key, <<0::64>>, nonce, true)
+    :crypto.crypto_one_time(:des_ede3_cbc, key, @des_iv, nonce, true)
   end
 end

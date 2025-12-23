@@ -141,6 +141,6 @@ Some things of note:
 
 - NoNoncense nonces generate much faster than random binaries (and guarantee uniqueness).
 - The plain (counter) nonce generation rate is extremely high, even with a single thread. Multithreading improves performance mainly for 64-bits nonces.
-- Increasing the thread count starts to reduce plaintext nonce performance at some point (it's better to scale the number of nodes). Generation rates seem to hit a bottleneck of some kind, probably to do with `:atomics` contention. 4 tasks seem to optional with plaintext nonces on this platform.
+- Increasing the thread count starts to reduce plaintext nonce performance at some point (it's better to scale the number of nodes). Generation rates seem to hit a bottleneck of some kind, probably to do with `:atomics` contention. 4 tasks seem to be optimal with plaintext nonces on this platform.
 - Nonce encryption exacts a performance penalty, but it is manageable and scales well with cores. AES performs exceedingly well and there's really no reason to use anything else for 128-bits nonces except on platforms without hardware acceleration. For 64/96-bits nonces, Blowfish is a good default that is available in OTP. For 96-bits nonces, Speck offers best security and performance. See the [NoNoncense](https://hexdocs.pm/no_noncense/NoNoncense.html#module-nonce-encryption) docs for more info.
 - 3DES performs atrociously in comparison

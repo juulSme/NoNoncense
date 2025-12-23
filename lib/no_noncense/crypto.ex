@@ -16,7 +16,7 @@ defmodule NoNoncense.Crypto do
     %{base_key: base_key} = opts
 
     verify_base_key(base_key)
-    opts |> Map.take([:cipher64, :cipher96, :cipher128]) |> Enum.each(&verify_alg/1)
+    opts |> Map.take([:cipher64, :cipher96, :cipher128]) |> Enum.each(&verify_speck_loaded/1)
 
     key_alg_64 = maybe_gen_key(opts.key64, base_key, opts.cipher64, 64) |> maybe_init_cipher()
     key_alg_96 = maybe_gen_key(opts.key96, base_key, opts.cipher96, 96) |> maybe_init_cipher()
@@ -30,10 +30,9 @@ defmodule NoNoncense.Crypto do
       raise ArgumentError, "base_key size must be at least 256 bits"
   end
 
-  defp verify_alg(alg) do
+  defp verify_speck_loaded({_map_key, alg}) do
     alg != :speck or Code.ensure_loaded?(SpeckEx) or
-      raise ArgumentError,
-            "you need optional dependency :speck_ex to use the speck cipher"
+      raise ArgumentError, "you need optional dependency :speck_ex to use the speck cipher"
   end
 
   # Generate keys for nonce encryption if a base key or override is specified
@@ -116,12 +115,14 @@ defmodule NoNoncense.Crypto do
   defp maybe_init_cipher(_), do: nil
 
   defp gen_key(base, salt, length) do
-    :crypto.pbkdf2_hmac(:sha256, base, salt, 50_000, length)
+    :crypto.pbkdf2_hmac(:sha256, base, salt, 1000, length)
   end
 
   if Code.ensure_loaded?(SpeckEx) do
     defdelegate speck_enc(nonce, cipher, variant), to: SpeckEx.Block, as: :encrypt
   else
-    def speck_enc(_nonce, _cipher, _variant), do: nil
+    def speck_enc(_nonce, _cipher, _variant) do
+      raise(ArgumentError, "you need optional dependency :speck_ex to use the speck cipher")
+    end
   end
 end

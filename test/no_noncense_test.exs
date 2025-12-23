@@ -145,6 +145,15 @@ defmodule NoNoncenseTest do
           cipher64: :aes
         )
       end
+
+      assert_raise ArgumentError, "alg aes is not supported for 96-bits nonces", fn ->
+        NoNoncense.init(
+          name: @name,
+          machine_id: 1,
+          base_key: :crypto.strong_rand_bytes(32),
+          cipher96: :aes
+        )
+      end
     end
 
     test "defaults to derived keys" do
