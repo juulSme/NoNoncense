@@ -1,7 +1,9 @@
 defmodule NoNoncenseTest do
+  alias NoNoncense.Crypto
   use ExUnit.Case, async: true
   use NoNoncense.Constants
   import ExUnit.CaptureLog
+  import SpeckEx.Block
 
   @name :test_nonce_factory
   @epoch System.system_time(:millisecond)
@@ -171,16 +173,20 @@ defmodule NoNoncenseTest do
         key128: key128
       )
 
-      <<_::51, c1::13>> = NoNoncense.nonce(@name, 64)
+      <<b::51, c1::13>> = NoNoncense.nonce(@name, 64)
       enc_nonce_64 = NoNoncense.encrypted_nonce(@name, 64)
-      <<_::51, c2::13>> = :crypto.crypto_one_time(:blowfish_ecb, key64, enc_nonce_64, false)
-      <<enc_nonce_96::binary-8, 0::32>> = NoNoncense.encrypted_nonce(@name, 96)
-      <<_::51, c3::13>> = :crypto.crypto_one_time(:blowfish_ecb, key96, enc_nonce_96, false)
+      enc_nonce_96 = NoNoncense.encrypted_nonce(@name, 96)
       enc_nonce_128 = NoNoncense.encrypted_nonce(@name, 128)
-      <<_::115, c4::13>> = :crypto.crypto_one_time(:aes_256_ecb, key128, enc_nonce_128, false)
-      assert c1 == c2 - 1
-      assert c2 == c3 - 1
-      assert c3 == c4 - 1
+
+      assert enc_nonce_64 ==
+               :crypto.crypto_one_time(:blowfish_ecb, key64, <<b::51, c1 + 1::13>>, true)
+
+      assert enc_nonce_96 ==
+               :crypto.crypto_one_time(:blowfish_ecb, key96, <<b::51, c1 + 2::13>>, true) <>
+                 <<0::32>>
+
+      assert enc_nonce_128 ==
+               :crypto.crypto_one_time(:aes_256_ecb, key128, <<b::51, 0::64, c1 + 3::13>>, true)
     end
 
     test "verifies key override lengths" do
@@ -441,33 +447,46 @@ defmodule NoNoncenseTest do
   end
 
   describe "inialized ciphers" do
-    test "Blowfish crypto_one_time matches crypto_update" do
-      key = :crypto.strong_rand_bytes(32)
-      blocks = for _ <- 1..10, do: :crypto.strong_rand_bytes(8)
-      one_time_res = for b <- blocks, do: :crypto.crypto_one_time(:blowfish_ecb, key, b, true)
-      initialized = :crypto.crypto_init(:blowfish_ecb, key, true)
-      update_res = for b <- blocks, do: :crypto.crypto_update(initialized, b)
-      assert one_time_res == update_res
+    test "Blowfish crypto_one_time matches concurrent shared-init-ref crypto_update" do
+      test_concurrent_shared_init_ref_enc(:blowfish_ecb, 16, 8)
     end
 
-    test "AES 256 crypto_one_time matches crypto_update" do
-      key = :crypto.strong_rand_bytes(32)
-      blocks = for _ <- 1..10, do: :crypto.strong_rand_bytes(16)
-      one_time_res = for b <- blocks, do: :crypto.crypto_one_time(:aes_256_ecb, key, b, true)
-      initialized = :crypto.crypto_init(:aes_256_ecb, key, true)
-      update_res = for b <- blocks, do: :crypto.crypto_update(initialized, b)
-      assert one_time_res == update_res
+    test "AES 256 crypto_one_time matches concurrent shared-init-ref crypto_update" do
+      test_concurrent_shared_init_ref_enc(:aes_256_ecb, 32, 16)
     end
   end
 
-  describe "encrypted_nonce/2 with blowfish" do
+  defp test_concurrent_shared_init_ref_enc(alg, key_size, block_size) do
+    key = :crypto.strong_rand_bytes(key_size)
+    blocks = for _ <- 1..1000, do: :crypto.strong_rand_bytes(block_size)
+
+    crypto_one_time_res =
+      :crypto.crypto_one_time(alg, key, blocks, true)
+      |> then(fn bin -> for <<block::binary-size(block_size) <- bin>>, do: block end)
+      |> Enum.sort()
+
+    initialized = :crypto.crypto_init(alg, key, true)
+
+    results =
+      blocks
+      |> Stream.chunk_every(100)
+      |> Enum.map(fn blocks ->
+        Task.async(fn ->
+          for b <- blocks, do: :crypto.crypto_update(initialized, b)
+        end)
+      end)
+      |> Task.await_many()
+      |> List.flatten()
+      |> Enum.sort()
+
+    assert crypto_one_time_res == results
+  end
+
+  describe "encrypted_nonce/2 with blowfish and aes" do
     setup do
-      NoNoncense.init(
-        machine_id: 0,
-        name: @name,
-        epoch: @epoch,
-        base_key: :crypto.strong_rand_bytes(32)
-      )
+      base_key = :crypto.strong_rand_bytes(32)
+      NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch, base_key: base_key)
+      [base_key: base_key]
     end
 
     test "raises without key" do
@@ -496,6 +515,27 @@ defmodule NoNoncenseTest do
       nonce = NoNoncense.encrypted_nonce(@name, 128)
       assert bit_size(nonce) == 128
       assert nonce != NoNoncense.encrypted_nonce(@name, 128)
+    end
+
+    test "actually uses blowfish / aes", %{base_key: base_key} do
+      {_, key64} = Crypto.maybe_gen_key(nil, base_key, :blowfish, 64)
+      {_, key96} = Crypto.maybe_gen_key(nil, base_key, :blowfish, 96)
+      {_, key128} = Crypto.maybe_gen_key(nil, base_key, :aes, 128)
+
+      <<b::51, c1::13>> = NoNoncense.nonce(@name, 64)
+      enc_nonce_64 = NoNoncense.encrypted_nonce(@name, 64)
+      enc_nonce_96 = NoNoncense.encrypted_nonce(@name, 96)
+      enc_nonce_128 = NoNoncense.encrypted_nonce(@name, 128)
+
+      assert enc_nonce_64 ==
+               :crypto.crypto_one_time(:blowfish_ecb, key64, <<b::51, c1 + 1::13>>, true)
+
+      assert enc_nonce_96 ==
+               :crypto.crypto_one_time(:blowfish_ecb, key96, <<b::51, c1 + 2::13>>, true) <>
+                 <<0::32>>
+
+      assert enc_nonce_128 ==
+               :crypto.crypto_one_time(:aes_256_ecb, key128, <<b::51, 0::64, c1 + 3::13>>, true)
     end
 
     @tag timeout: :infinity
@@ -564,12 +604,28 @@ defmodule NoNoncenseTest do
       nonce = NoNoncense.encrypted_nonce(@name, 96)
       assert bit_size(nonce) == 96
       assert nonce != NoNoncense.encrypted_nonce(@name, 96)
+      <<_head::64, tail::32>> = nonce
+      assert tail != 0
     end
 
     test "generates new 128-bits nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 128)
       assert bit_size(nonce) == 128
       assert nonce != NoNoncense.encrypted_nonce(@name, 128)
+    end
+
+    test "nonces are actually speck-encrypted" do
+      %{cipher64: {_, init64}, cipher96: {_, init96}, cipher128: {_, init128}} =
+        get_state(@name)
+
+      <<b::51, c1::13>> = NoNoncense.nonce(@name, 64)
+      enc_nonce_64 = NoNoncense.encrypted_nonce(@name, 64)
+      enc_nonce_96 = NoNoncense.encrypted_nonce(@name, 96)
+      enc_nonce_128 = NoNoncense.encrypted_nonce(@name, 128)
+
+      assert enc_nonce_64 == encrypt(<<b::51, c1 + 1::13>>, init64, :speck64_128)
+      assert enc_nonce_96 == encrypt(<<b::51, 0::32, c1 + 2::13>>, init96, :speck96_144)
+      assert enc_nonce_128 == encrypt(<<b::51, 0::64, c1 + 3::13>>, init128, :speck128_256)
     end
   end
 
@@ -595,6 +651,33 @@ defmodule NoNoncenseTest do
       nonce = NoNoncense.encrypted_nonce(@name, 96)
       assert bit_size(nonce) == 96
       assert nonce != NoNoncense.encrypted_nonce(@name, 96)
+    end
+
+    test "are actually 3des-encrypted" do
+      %{cipher64: {_, key64}, cipher96: {_, key96}} = get_state(@name)
+
+      <<b::51, c1::13>> = NoNoncense.nonce(@name, 64)
+      enc_nonce_64 = NoNoncense.encrypted_nonce(@name, 64)
+      enc_nonce_96 = NoNoncense.encrypted_nonce(@name, 96)
+
+      assert enc_nonce_64 ==
+               :crypto.crypto_one_time(
+                 :des_ede3_cbc,
+                 key64,
+                 <<0::64>>,
+                 <<b::51, c1 + 1::13>>,
+                 true
+               )
+
+      assert enc_nonce_96 ==
+               :crypto.crypto_one_time(
+                 :des_ede3_cbc,
+                 key96,
+                 <<0::64>>,
+                 <<b::51, c1 + 2::13>>,
+                 true
+               ) <>
+                 <<0::32>>
     end
   end
 end

@@ -37,60 +37,60 @@ defmodule NoNoncense.Crypto do
   end
 
   # Generate keys for nonce encryption if a base key or override is specified
-  defp maybe_gen_key(key, base_key, alg, nonce_size)
-  defp maybe_gen_key(nil, nil, _, _), do: nil
+  def maybe_gen_key(key, base_key, alg, nonce_size)
+  def maybe_gen_key(nil, nil, _, _), do: nil
 
-  defp maybe_gen_key(nil, base_key, :blowfish, 64),
+  def maybe_gen_key(nil, base_key, :blowfish, 64),
     do: {:blowfish, gen_key(base_key, "blowfish_64", 16)}
 
-  defp maybe_gen_key(nil, base_key, :blowfish, 96),
+  def maybe_gen_key(nil, base_key, :blowfish, 96),
     do: {:blowfish, gen_key(base_key, "blowfish_96", 16)}
 
-  defp maybe_gen_key(nil, base_key, :des3, 64), do: {:des3, gen_key(base_key, "des3_64", 24)}
-  defp maybe_gen_key(nil, base_key, :des3, 96), do: {:des3, gen_key(base_key, "des3_96", 24)}
-  defp maybe_gen_key(nil, base_key, :aes, 128), do: {:aes, gen_key(base_key, "aes", 32)}
+  def maybe_gen_key(nil, base_key, :des3, 64), do: {:des3, gen_key(base_key, "des3_64", 24)}
+  def maybe_gen_key(nil, base_key, :des3, 96), do: {:des3, gen_key(base_key, "des3_96", 24)}
+  def maybe_gen_key(nil, base_key, :aes, 128), do: {:aes, gen_key(base_key, "aes", 32)}
 
-  defp maybe_gen_key(nil, base_key, :speck, 64),
+  def maybe_gen_key(nil, base_key, :speck, 64),
     do: {:speck, gen_key(base_key, "speck64_128", 16)}
 
-  defp maybe_gen_key(nil, base_key, :speck, 96),
+  def maybe_gen_key(nil, base_key, :speck, 96),
     do: {:speck, gen_key(base_key, "speck96_144", 18)}
 
-  defp maybe_gen_key(nil, base_key, :speck, 128),
+  def maybe_gen_key(nil, base_key, :speck, 128),
     do: {:speck, gen_key(base_key, "speck128_256", 32)}
 
-  defp maybe_gen_key(<<_::128>> = key, _, :blowfish, 64), do: {:blowfish, key}
+  def maybe_gen_key(<<_::128>> = key, _, :blowfish, 64), do: {:blowfish, key}
 
-  defp maybe_gen_key(_, _, :blowfish, 64),
+  def maybe_gen_key(_, _, :blowfish, 64),
     do: raise(ArgumentError, "blowfish key size must be 128 bits")
 
-  defp maybe_gen_key(<<_::128>> = key, _, :blowfish, 96), do: {:blowfish, key}
+  def maybe_gen_key(<<_::128>> = key, _, :blowfish, 96), do: {:blowfish, key}
 
-  defp maybe_gen_key(_, _, :blowfish, 96),
+  def maybe_gen_key(_, _, :blowfish, 96),
     do: raise(ArgumentError, "blowfish key size must be 128 bits")
 
-  defp maybe_gen_key(<<_::192>> = key, _, :des3, 64), do: {:des3, key}
-  defp maybe_gen_key(_, _, :des3, 64), do: raise(ArgumentError, "des3 key size must be 192 bits")
-  defp maybe_gen_key(<<_::192>> = key, _, :des3, 96), do: {:des3, key}
-  defp maybe_gen_key(_, _, :des3, 96), do: raise(ArgumentError, "des3 key size must be 192 bits")
-  defp maybe_gen_key(<<_::256>> = key, _, :aes, 128), do: {:aes, key}
-  defp maybe_gen_key(_, _, :aes, 128), do: raise(ArgumentError, "aes key size must be 256 bits")
-  defp maybe_gen_key(<<_::128>> = key, _, :speck, 64), do: {:speck, key}
+  def maybe_gen_key(<<_::192>> = key, _, :des3, 64), do: {:des3, key}
+  def maybe_gen_key(_, _, :des3, 64), do: raise(ArgumentError, "des3 key size must be 192 bits")
+  def maybe_gen_key(<<_::192>> = key, _, :des3, 96), do: {:des3, key}
+  def maybe_gen_key(_, _, :des3, 96), do: raise(ArgumentError, "des3 key size must be 192 bits")
+  def maybe_gen_key(<<_::256>> = key, _, :aes, 128), do: {:aes, key}
+  def maybe_gen_key(_, _, :aes, 128), do: raise(ArgumentError, "aes key size must be 256 bits")
+  def maybe_gen_key(<<_::128>> = key, _, :speck, 64), do: {:speck, key}
 
-  defp maybe_gen_key(_, _, :speck, 64),
+  def maybe_gen_key(_, _, :speck, 64),
     do: raise(ArgumentError, "speck64 key size must be 128 bits")
 
-  defp maybe_gen_key(<<_::144>> = key, _, :speck, 96), do: {:speck, key}
+  def maybe_gen_key(<<_::144>> = key, _, :speck, 96), do: {:speck, key}
 
-  defp maybe_gen_key(_, _, :speck, 96),
+  def maybe_gen_key(_, _, :speck, 96),
     do: raise(ArgumentError, "speck96 key size must be 144 bits")
 
-  defp maybe_gen_key(<<_::256>> = key, _, :speck, 128), do: {:speck, key}
+  def maybe_gen_key(<<_::256>> = key, _, :speck, 128), do: {:speck, key}
 
-  defp maybe_gen_key(_, _, :speck, 128),
+  def maybe_gen_key(_, _, :speck, 128),
     do: raise(ArgumentError, "speck128 key size must be 256 bits")
 
-  defp maybe_gen_key(_, _, alg, size),
+  def maybe_gen_key(_, _, alg, size),
     do: raise(ArgumentError, "alg #{alg} is not supported for #{size}-bits nonces")
 
   # the IV-less ciphers that we use can be pre-initialized
@@ -104,13 +104,13 @@ defmodule NoNoncense.Crypto do
 
   if Code.ensure_loaded?(SpeckEx) do
     defp maybe_init_cipher({:speck, <<_::128>> = key}),
-      do: {:speck, SpeckEx.Native.speck64_128_init(key)}
+      do: {:speck, SpeckEx.Block.init(key, :speck64_128)}
 
     defp maybe_init_cipher({:speck, <<_::144>> = key}),
-      do: {:speck, SpeckEx.Native.speck96_144_init(key)}
+      do: {:speck, SpeckEx.Block.init(key, :speck96_144)}
 
     defp maybe_init_cipher({:speck, <<_::256>> = key}),
-      do: {:speck, SpeckEx.Native.speck128_256_init(key)}
+      do: {:speck, SpeckEx.Block.init(key, :speck128_256)}
   end
 
   defp maybe_init_cipher(_), do: nil
@@ -120,20 +120,8 @@ defmodule NoNoncense.Crypto do
   end
 
   if Code.ensure_loaded?(SpeckEx) do
-    defdelegate speck64(nonce, cipher), to: SpeckEx.Native, as: :speck64_128_encrypt
+    defdelegate speck_enc(nonce, cipher, variant), to: SpeckEx.Block, as: :encrypt
   else
-    def speck64(_nonce, _cipher64), do: nil
-  end
-
-  if Code.ensure_loaded?(SpeckEx) do
-    defdelegate speck96(nonce, cipher), to: SpeckEx.Native, as: :speck96_144_encrypt
-  else
-    def speck96(_nonce, _cipher96), do: nil
-  end
-
-  if Code.ensure_loaded?(SpeckEx) do
-    defdelegate speck128(nonce, cipher), to: SpeckEx.Native, as: :speck128_256_encrypt
-  else
-    def speck128(_nonce, _cipher128), do: nil
+    def speck_enc(_nonce, _cipher, _variant), do: nil
   end
 end

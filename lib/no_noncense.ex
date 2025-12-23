@@ -283,7 +283,7 @@ defmodule NoNoncense do
     nonce = gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref)
 
     case cipher64 do
-      {:speck, cipher64} -> Crypto.speck64(nonce, cipher64)
+      {:speck, cipher64} -> Crypto.speck_enc(nonce, cipher64, :speck64_128)
       {:blowfish, cipher64} -> :crypto.crypto_update(cipher64, nonce)
       {:des3, key} -> des_encrypt(nonce, key)
       nil -> raise "no key set at NoNoncense initialization"
@@ -297,7 +297,7 @@ defmodule NoNoncense do
     case cipher96 do
       {:speck, cipher96} ->
         gen_ctr_nonce_96(machine_id, init_at, time_offset, counters_ref)
-        |> Crypto.speck96(cipher96)
+        |> Crypto.speck_enc(cipher96, :speck96_144)
 
       {other, cipher_or_key} ->
         nonce = gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref)
@@ -320,7 +320,7 @@ defmodule NoNoncense do
 
     case cipher128 do
       {:aes, cipher128} -> :crypto.crypto_update(cipher128, nonce)
-      {:speck, cipher128} -> Crypto.speck128(nonce, cipher128)
+      {:speck, cipher128} -> Crypto.speck_enc(nonce, cipher128, :speck128_256)
       nil -> raise "no key set at NoNoncense initialization"
     end
   end
