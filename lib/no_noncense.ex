@@ -134,17 +134,11 @@ defmodule NoNoncense do
   @type nonce_size :: 64 | 96 | 128
   @type nonce :: <<_::64>> | <<_::96>> | <<_::128>>
 
-  @type init_opts :: [epoch: non_neg_integer(), name: atom(), machine_id: non_neg_integer()]
-
-  @doc """
-  Initialize a nonce factory. Multiple instances with different names, epochs and even machine IDs are supported.
-
-  ## Options
-
+  @init_opt_docs """
     * `:machine_id` (required) - machine ID of the node
     * `:name` - The name of the nonce factory (default: module name).
     * `:epoch` - Override the configured epoch for this factory instance. Defaults to the NoNoncense epoch (2025-01-01 00:00:00Z).
-    * `:base_key` - A 256-bit (32 bytes) key used to derive encryption keys for all nonce sizes.
+    * `:base_key` - A key of at least 256 bits (32 bytes) used to derive encryption keys for all nonce sizes.
     * `:key64` - Override the derived key for 64-bit nonces.
     * `:key96` - Override the derived key for 96-bit nonces.
     * `:key128` - Override the derived key for 128-bit nonces.
@@ -153,6 +147,27 @@ defmodule NoNoncense do
     * `:cipher128` - The cipher for 128-bit nonces (`:aes` or `:speck`). Defaults to `:aes`.
 
   The encryption-related options only affect `encrypted_nonce/2` nonces.
+  """
+
+  @typedoc @init_opt_docs
+  @type init_opt ::
+          {:epoch, non_neg_integer()}
+          | {:name, atom()}
+          | {:machine_id, non_neg_integer()}
+          | {:base_key, binary()}
+          | {:key64, binary()}
+          | {:key96, binary()}
+          | {:key128, binary()}
+          | {:cipher64, :blowfish | :des3 | :speck}
+          | {:cipher96, :blowfish | :des3 | :speck}
+          | {:cipher128, :aes | :speck}
+
+  @doc """
+  Initialize a nonce factory. Multiple instances with different names, epochs and even machine IDs are supported.
+
+  ## Options
+
+  #{@init_opt_docs}
 
   ## Examples
 
@@ -162,7 +177,7 @@ defmodule NoNoncense do
       iex> NoNoncense.init(machine_id: 1, name: :custom, epoch: 1609459200000)
       :ok
   """
-  @spec init(init_opts()) :: :ok
+  @spec init([init_opt()]) :: :ok
   def init(opts \\ []) do
     name = opts[:name] || __MODULE__
     epoch = opts[:epoch] || @no_noncense_epoch
