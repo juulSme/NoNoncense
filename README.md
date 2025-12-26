@@ -8,7 +8,7 @@ Nonces are unique values that are generated once and never repeated within your 
 - **Cryptographic Operations**: Serve as initialization vectors (IVs) for encryption algorithms, ensuring security in block cipher modes
 - **Deduplication**: Identify and prevent duplicate operations or messages in distributed systems
 
-Generate locally unique nonces (number-only-used-once) in distributed Elixir. Nonces come in multiple variants:
+Nonces come in multiple variants:
 
 - counter nonces that are unique but predictable and can be generated incredibly quickly
 - sortable nonces ([Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID)) that have an accurate creation timestamp in their first bits
