@@ -2,6 +2,12 @@ defmodule NoNoncense do
   @moduledoc """
   Generate locally unique nonces (number-only-used-once) in distributed Elixir.
 
+  Nonces are unique values that are generated once and never repeated within your system. They have many practical uses including:
+
+  - **ID Generation**: Create unique identifiers for database records, API requests, or any other resource in distributed systems
+  - **Cryptographic Operations**: Serve as initialization vectors (IVs) for encryption algorithms, ensuring security in block cipher modes
+  - **Deduplication**: Identify and prevent duplicate operations or messages in distributed systems
+
   Locally unique means that the nonces are unique within your application/database/domain, as opposed to globally unique nonces that are unique across applications/databases/domains, like UUIDs.
 
   > #### Read the migration guide {: .warning}
