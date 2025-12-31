@@ -40,7 +40,7 @@ defmodule NoNoncense.MixProject do
     [
       {:ex_doc, "~> 0.36", only: [:dev, :test], runtime: false},
       {:benchmark, github: "juulSme/benchmark_ex", only: [:dev, :test]},
-      {:speck_ex, "~> 0.0.1-beta5", optional: true},
+      {:speck_ex, "~> 0.1.0", optional: true},
       {:redix, "~> 1.0", optional: true, only: [:test]}
     ]
   end
