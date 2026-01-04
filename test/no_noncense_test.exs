@@ -466,19 +466,25 @@ defmodule NoNoncenseTest do
   end
 
   defp test_concurrent_shared_init_ref_enc(alg, key_size, block_size) do
+    to_blocklist = fn bin -> for <<block::binary-size(block_size) <- bin>>, do: block end
+
     key = :crypto.strong_rand_bytes(key_size)
-    blocks = for _ <- 1..1000, do: :crypto.strong_rand_bytes(block_size)
+    schedulers = :erlang.system_info(:schedulers_online)
+    # block count aligned with scheduler count
+    block_n = 1_000_000 |> div(schedulers) |> Kernel.*(schedulers)
+    blocks = :crypto.strong_rand_bytes(block_size * block_n)
 
     crypto_one_time_res =
       :crypto.crypto_one_time(alg, key, blocks, true)
-      |> then(fn bin -> for <<block::binary-size(block_size) <- bin>>, do: block end)
+      |> to_blocklist.()
       |> Enum.sort()
 
     initialized = :crypto.crypto_init(alg, key, true)
 
     results =
       blocks
-      |> Stream.chunk_every(100)
+      |> to_blocklist.()
+      |> Stream.chunk_every(div(block_n, schedulers))
       |> Enum.map(fn blocks ->
         Task.async(fn ->
           for b <- blocks, do: :crypto.crypto_update(initialized, b)
