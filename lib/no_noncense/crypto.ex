@@ -1,5 +1,6 @@
 defmodule NoNoncense.Crypto do
   @moduledoc false
+  use NoNoncense.Constants
 
   @base_opts %{
     base_key: nil,
@@ -94,10 +95,16 @@ defmodule NoNoncense.Crypto do
 
   # the IV-less ciphers that we use can be pre-initialized
   defp maybe_init_cipher(alg_key_pair)
-  defp maybe_init_cipher({:aes, key}), do: {:aes, :crypto.crypto_init(:aes_256_ecb, key, true)}
 
-  defp maybe_init_cipher({:blowfish, key}),
-    do: {:blowfish, :crypto.crypto_init(:blowfish_ecb, key, true)}
+  defp maybe_init_cipher({:aes, key}) do
+    {:aes, :crypto.crypto_init(:aes_256_ecb, key, true),
+     :crypto.crypto_init(:aes_256_ecb, key, false)}
+  end
+
+  defp maybe_init_cipher({:blowfish, key}) do
+    {:blowfish, :crypto.crypto_init(:blowfish_ecb, key, true),
+     :crypto.crypto_init(:blowfish_ecb, key, false)}
+  end
 
   defp maybe_init_cipher({:des3, _} = alg_key_pair), do: alg_key_pair
 
@@ -120,9 +127,58 @@ defmodule NoNoncense.Crypto do
 
   if Code.ensure_loaded?(SpeckEx) do
     defdelegate speck_enc(nonce, cipher, variant), to: SpeckEx.Block, as: :encrypt
+    defdelegate speck_dec(nonce, cipher, variant), to: SpeckEx.Block, as: :decrypt
   else
     def speck_enc(_nonce, _cipher, _variant) do
       raise(ArgumentError, "you need optional dependency :speck_ex to use the speck cipher")
     end
+
+    def speck_dec(_nonce, _cipher, _variant) do
+      raise(ArgumentError, "you need optional dependency :speck_ex to use the speck cipher")
+    end
+  end
+
+  def crypt(nonce, cipher, encrypt?)
+  def crypt(_, nil, _), do: raise(RuntimeError, "no key set at NoNoncense initialization")
+
+  # 64-bits Speck
+  def crypt(<<n::binary-8>>, {:speck, c}, true), do: speck_enc(n, c, :speck64_128)
+  def crypt(<<n::binary-8>>, {:speck, c}, false), do: speck_dec(n, c, :speck64_128)
+
+  # 64-bits Blowfish
+  def crypt(<<n::binary-8>>, {:blowfish, c, _}, true), do: :crypto.crypto_update(c, n)
+  def crypt(<<n::binary-8>>, {:blowfish, _, c}, false), do: :crypto.crypto_update(c, n)
+
+  # 64-bits 3DES
+  def crypt(<<n::binary-8>>, {:des3, key}, encrypt?), do: des_crypt(n, key, encrypt?)
+
+  # 96-bits Speck
+  def crypt(<<n::binary-12>>, {:speck, c}, true), do: speck_enc(n, c, :speck96_144)
+  def crypt(<<n::binary-12>>, {:speck, c}, false), do: speck_dec(n, c, :speck96_144)
+
+  # 96-bits Blowfish
+  def crypt(<<n::binary-8, @pad_64_to_96>>, {:blowfish, c, _}, true),
+    do: :crypto.crypto_update(c, n) <> @pad_64_to_96
+
+  def crypt(<<n::binary-8, @pad_64_to_96>>, {:blowfish, _, c}, false),
+    do: :crypto.crypto_update(c, n) <> @pad_64_to_96
+
+  # 96-bits 3DES
+  def crypt(<<n::binary-8, @pad_64_to_96>>, {:des3, key}, encrypt?),
+    do: des_crypt(n, key, encrypt?) <> @pad_64_to_96
+
+  # 128-bits AES
+  def crypt(<<n::binary-16>>, {:aes, c, _}, true), do: :crypto.crypto_update(c, n)
+  def crypt(<<n::binary-16>>, {:aes, _, c}, false), do: :crypto.crypto_update(c, n)
+
+  # 128-bits Speck
+  def crypt(<<n::binary-16>>, {:speck, c}, true), do: speck_enc(n, c, :speck128_256)
+  def crypt(<<n::binary-16>>, {:speck, c}, false), do: speck_dec(n, c, :speck128_256)
+
+  @des_iv <<0::64>>
+
+  @compile {:inline, des_crypt: 3}
+  defp des_crypt(nonce, key, encrypt?) do
+    :crypto.crypto_one_time(:des_ede3_cbc, key, @des_iv, nonce, encrypt?)
   end
 end

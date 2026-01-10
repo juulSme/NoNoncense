@@ -28,6 +28,8 @@ defmodule NoNoncense.Constants do
 
       @counter_idx 1
       @sortable_counter_idx 2
+
+      @pad_64_to_96 <<0::32>>
     end
   end
 end

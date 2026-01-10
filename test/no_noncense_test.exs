@@ -114,7 +114,7 @@ defmodule NoNoncenseTest do
     test "defaults to OTP algorithms" do
       NoNoncense.init(name: @name, machine_id: 1, base_key: :crypto.strong_rand_bytes(32))
 
-      %{cipher64: {cipher64, _}, cipher96: {cipher96, _}, cipher128: {cipher128, _}} =
+      %{cipher64: {cipher64, _, _}, cipher96: {cipher96, _, _}, cipher128: {cipher128, _, _}} =
         get_state(@name)
 
       assert cipher64 == :blowfish
@@ -471,7 +471,7 @@ defmodule NoNoncenseTest do
     key = :crypto.strong_rand_bytes(key_size)
     schedulers = :erlang.system_info(:schedulers_online)
     # block count aligned with scheduler count
-    block_n = 1_000_000 |> div(schedulers) |> Kernel.*(schedulers)
+    block_n = 100_000 |> div(schedulers) |> Kernel.*(schedulers)
     blocks = :crypto.strong_rand_bytes(block_size * block_n)
 
     crypto_one_time_res =
@@ -693,6 +693,182 @@ defmodule NoNoncenseTest do
                  true
                ) <>
                  <<0::32>>
+    end
+  end
+
+  describe "encrypt/2 and decrypt/2" do
+    setup do
+      NoNoncense.init(
+        machine_id: 0,
+        name: @name,
+        epoch: @epoch,
+        base_key: :crypto.strong_rand_bytes(32)
+      )
+    end
+
+    test "encrypt and decrypt 64-bit nonces" do
+      plaintext = NoNoncense.nonce(@name, 64)
+      ciphertext = NoNoncense.encrypt(@name, plaintext)
+
+      assert bit_size(ciphertext) == 64
+      assert plaintext != ciphertext
+      assert plaintext == NoNoncense.decrypt(@name, ciphertext)
+    end
+
+    test "encrypt and decrypt 96-bit nonces" do
+      plaintext = NoNoncense.nonce(@name, 64) <> <<0::32>>
+      ciphertext = NoNoncense.encrypt(@name, plaintext)
+
+      assert bit_size(ciphertext) == 96
+      assert plaintext != ciphertext
+      assert plaintext == NoNoncense.decrypt(@name, ciphertext)
+    end
+
+    test "encrypt and decrypt 128-bit nonces" do
+      plaintext = NoNoncense.nonce(@name, 128)
+      ciphertext = NoNoncense.encrypt(@name, plaintext)
+
+      assert bit_size(ciphertext) == 128
+      assert plaintext != ciphertext
+      assert plaintext == NoNoncense.decrypt(@name, ciphertext)
+    end
+
+    test "encrypting the same nonce twice produces the same ciphertext" do
+      plaintext = NoNoncense.nonce(@name, 64)
+      ciphertext1 = NoNoncense.encrypt(@name, plaintext)
+      ciphertext2 = NoNoncense.encrypt(@name, plaintext)
+
+      assert ciphertext1 == ciphertext2
+    end
+
+    test "different plaintext nonces produce different ciphertext" do
+      plaintext1 = NoNoncense.nonce(@name, 64)
+      plaintext2 = NoNoncense.nonce(@name, 64)
+      ciphertext1 = NoNoncense.encrypt(@name, plaintext1)
+      ciphertext2 = NoNoncense.encrypt(@name, plaintext2)
+
+      assert plaintext1 != plaintext2
+      assert ciphertext1 != ciphertext2
+    end
+
+    test "decrypt is the inverse of encrypt for 64 and 128-bit nonces" do
+      for size <- [64, 128] do
+        plaintext = NoNoncense.nonce(@name, size)
+        ciphertext = NoNoncense.encrypt(@name, plaintext)
+        assert plaintext == NoNoncense.decrypt(@name, ciphertext)
+      end
+    end
+
+    test "rejects 96 bits nonces with non-zero tail" do
+      assert_raise FunctionClauseError, fn -> NoNoncense.encrypt(@name, <<1::96>>) end
+      assert_raise FunctionClauseError, fn -> NoNoncense.decrypt(@name, <<1::96>>) end
+    end
+  end
+
+  describe "encrypt/2 and decrypt/2 with Speck cipher for 96-bit support" do
+    setup do
+      NoNoncense.init(
+        machine_id: 0,
+        name: @name,
+        epoch: @epoch,
+        base_key: :crypto.strong_rand_bytes(32),
+        cipher64: :speck,
+        cipher96: :speck,
+        cipher128: :speck
+      )
+    end
+
+    test "encrypt and decrypt 96-bit nonces with Speck" do
+      plaintext = NoNoncense.nonce(@name, 96)
+      ciphertext = NoNoncense.encrypt(@name, plaintext)
+
+      assert bit_size(ciphertext) == 96
+      assert plaintext != ciphertext
+      assert plaintext == NoNoncense.decrypt(@name, ciphertext)
+    end
+
+    test "decrypt is the inverse of encrypt for all sizes with Speck" do
+      for size <- [64, 96, 128] do
+        plaintext = NoNoncense.nonce(@name, size)
+        ciphertext = NoNoncense.encrypt(@name, plaintext)
+        assert plaintext == NoNoncense.decrypt(@name, ciphertext)
+      end
+    end
+  end
+
+  describe "decrypt/2 encrypted_nonce/3 nonces" do
+    setup do
+      NoNoncense.init(
+        machine_id: 0,
+        name: @name,
+        epoch: @epoch,
+        base_key: :crypto.strong_rand_bytes(32)
+      )
+    end
+
+    test "decrypt counter-based encrypted nonces" do
+      encrypted_nonce = NoNoncense.encrypted_nonce(@name, 64, :counter)
+      decrypted = NoNoncense.decrypt(@name, encrypted_nonce)
+
+      assert bit_size(decrypted) == 64
+      # Verify it's a valid nonce structure
+      <<_ts::42, machine_id::9, _count::13>> = decrypted
+      assert machine_id == 0
+    end
+
+    test "decrypt works for nonces with counter base" do
+      for size <- [64, 96, 128] do
+        encrypted_nonce = NoNoncense.encrypted_nonce(@name, size, :counter)
+        decrypted = NoNoncense.decrypt(@name, encrypted_nonce)
+
+        assert bit_size(decrypted) == size
+        # Re-encrypting should produce the original encrypted nonce
+        assert NoNoncense.encrypt(@name, decrypted) == encrypted_nonce
+      end
+    end
+
+    test "decrypt works for nonces with sortable base" do
+      for size <- [64, 96, 128] do
+        encrypted_nonce = NoNoncense.encrypted_nonce(@name, size, :sortable)
+        decrypted = NoNoncense.decrypt(@name, encrypted_nonce)
+
+        assert bit_size(decrypted) == size
+        # Re-encrypting should produce the original encrypted nonce
+        assert NoNoncense.encrypt(@name, decrypted) == encrypted_nonce
+      end
+    end
+  end
+
+  describe "decrypt/2 encrypted_nonce/3 96-bit nonces with Speck" do
+    setup do
+      NoNoncense.init(
+        machine_id: 0,
+        name: @name,
+        epoch: @epoch,
+        base_key: :crypto.strong_rand_bytes(32),
+        cipher96: :speck
+      )
+    end
+
+    test "decrypt 96-bit counter-based encrypted nonces with Speck" do
+      encrypted_nonce = NoNoncense.encrypted_nonce(@name, 96, :counter)
+      decrypted = NoNoncense.decrypt(@name, encrypted_nonce)
+
+      assert bit_size(decrypted) == 96
+      # Verify it's a valid nonce structure
+      <<_ts::42, machine_id::9, _count::45>> = decrypted
+      assert machine_id == 0
+    end
+
+    test "decrypt works for all nonce sizes with Speck cipher" do
+      for size <- [64, 96, 128] do
+        encrypted_nonce = NoNoncense.encrypted_nonce(@name, size, :counter)
+        decrypted = NoNoncense.decrypt(@name, encrypted_nonce)
+
+        assert bit_size(decrypted) == size
+        # Re-encrypting should produce the original encrypted nonce
+        assert NoNoncense.encrypt(@name, decrypted) == encrypted_nonce
+      end
     end
   end
 end

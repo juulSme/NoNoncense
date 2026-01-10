@@ -235,29 +235,14 @@ defmodule NoNoncense do
   """
   @spec nonce(atom(), nonce_size()) :: nonce()
   def nonce(name \\ __MODULE__, bit_size)
+  def nonce(name, bit_size), do: :persistent_term.get(name) |> gen_ctr_nonce(bit_size)
 
-  def nonce(name, 64) do
-    {machine_id, init_at, time_offset, counters_ref, _} = :persistent_term.get(name)
-    gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref)
-  end
-
-  def nonce(name, 96) do
-    {machine_id, init_at, time_offset, counters_ref, _} = :persistent_term.get(name)
-    gen_ctr_nonce_96(machine_id, init_at, time_offset, counters_ref)
-  end
-
-  def nonce(name, 128) do
-    {machine_id, init_at, time_offset, counters_ref, _} = :persistent_term.get(name)
-    gen_ctr_nonce_128(machine_id, init_at, time_offset, counters_ref)
-  end
-
-  @compile {:inline, gen_ctr_nonce_64: 4, gen_ctr_nonce_96: 4, gen_ctr_nonce_128: 4}
-  defp gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref) do
+  defp gen_ctr_nonce({machine_id, init_at, time_offset, counters_ref, _}, 64) do
     # we can generate 10B nonce/s for 60 years straight before the unsigned 64-bits int overflows
     # so we don't need to worry about the atomic counter itself overflowing
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
 
-    # but we do need to worry about the nonce's counter - which may be only 13 bits for a 64-bit nonce - overflowing
+    # but we do need to worry about the nonce's counter - only 13 bits for a 64-bit nonce - overflowing
     # we divide the 64-bit atomic counter space to derive the nonce's cycle count and counter
     <<cycle_n::@atomic_cycle_bits_64, count::@count_bits_64>> = <<atomic_count::64>>
 
@@ -271,21 +256,26 @@ defmodule NoNoncense do
     to_nonce(timestamp, machine_id, count, 64)
   end
 
-  defp gen_ctr_nonce_96(machine_id, init_at, _time_offset, counters_ref) do
+  defp gen_ctr_nonce({machine_id, init_at, _time_offset, counters_ref, _}, 96) do
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
     <<cycle_n::@atomic_cycle_bits_96, count::@count_bits_96>> = <<atomic_count::64>>
     to_nonce(init_at + cycle_n, machine_id, count, 96)
   end
 
-  defp gen_ctr_nonce_128(machine_id, init_at, _time_offset, counters_ref) do
+  defp gen_ctr_nonce({machine_id, init_at, _time_offset, counters_ref, _}, 128) do
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
     to_nonce(init_at, machine_id, atomic_count, 128)
   end
 
   @doc """
-  Generate a new counter nonce and encrypt it. This creates an unpredictable but still unique nonce.
+  Generate a new nonce and encrypt it, to create a unique but unpredictable nonce.
+
+  The `base_type` argument can be used to specify if a `:counter` or `:sortable` nonce
+  should be used as the plaintext nonce (default `:counter`).
 
   For more info, see [nonce encryption](#module-nonce-encryption).
+
+  ## Examples
 
       iex> NoNoncense.init(machine_id: 1, base_key: :crypto.strong_rand_bytes(32))
       :ok
@@ -295,60 +285,50 @@ defmodule NoNoncense do
       <<6, 138, 218, 96, 131, 136, 51, 242, 0, 0, 0, 0>>
       iex> NoNoncense.encrypted_nonce(128)
       <<162, 10, 94, 4, 91, 56, 147, 198, 46, 87, 142, 197, 128, 41, 79, 209>>
+
+      # Using sortable nonces as base
+      iex> NoNoncense.encrypted_nonce(64, :sortable)
+      <<177, 123, 45, 67, 89, 12, 234, 56>>
   """
-  @spec encrypted_nonce(atom(), nonce_size()) :: nonce()
-  def encrypted_nonce(name \\ __MODULE__, bit_size)
+  @spec encrypted_nonce(atom(), nonce_size(), :counter | :sortable) :: nonce()
+  def encrypted_nonce(name \\ __MODULE__, bit_size, base_type \\ :counter)
 
-  def encrypted_nonce(name, 64) do
-    {machine_id, init_at, time_offset, counters_ref, {cipher64, _, _}} =
-      :persistent_term.get(name)
+  def encrypted_nonce(name, bit_size, base_type) when bit_size in [64, 128] do
+    config = :persistent_term.get(name)
+    cipher = get_cipher(config, bit_size)
+    gen_base_nonce(config, base_type, bit_size) |> Crypto.crypt(cipher, true)
+  end
 
-    nonce = gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref)
+  def encrypted_nonce(name, 96, base_type) do
+    config = :persistent_term.get(name)
+    {_, _, _, _, {_, cipher, _}} = config
 
-    case cipher64 do
-      {:speck, cipher64} -> Crypto.speck_enc(nonce, cipher64, :speck64_128)
-      {:blowfish, cipher64} -> :crypto.crypto_update(cipher64, nonce)
-      {:des3, key} -> des_encrypt(nonce, key)
-      nil -> raise RuntimeError, "no key set at NoNoncense initialization"
+    case cipher do
+      {:speck, _} -> gen_base_nonce(config, base_type, 96) |> Crypto.crypt(cipher, true)
+      _ -> (gen_base_nonce(config, base_type, 64) |> Crypto.crypt(cipher, true)) <> @pad_64_to_96
     end
   end
 
-  @pad_64_to_96 <<0::32>>
+  @doc """
+  Encrypt a nonce while preserving its uniqueness guarantee.
 
-  def encrypted_nonce(name, 96) do
-    {machine_id, init_at, time_offset, counters_ref, {_, cipher96, _}} =
-      :persistent_term.get(name)
+  Under the same key and algorithm, this results in a one-to-one mapping of plaintext and ciphertext nonces.
 
-    case cipher96 do
-      {:speck, cipher96} ->
-        gen_ctr_nonce_96(machine_id, init_at, time_offset, counters_ref)
-        |> Crypto.speck_enc(cipher96, :speck96_144)
+  The same caveats described for `encrypted_nonce/3` also apply to `encrypt/2` and `decrypt/2`. For more info, see [nonce encryption](#module-nonce-encryption).
 
-      {other, cipher_or_key} ->
-        nonce = gen_ctr_nonce_64(machine_id, init_at, time_offset, counters_ref)
+      iex> NoNoncense.init(machine_id: 1, base_key: :crypto.strong_rand_bytes(32))
+      :ok
+      iex> plaintext = NoNoncense.nonce(64)
+      iex> ^plaintext = plaintext |> NoNoncense.encrypt() |> NoNoncense.decrypt()
+  """
+  @spec encrypt(atom, nonce()) :: nonce()
+  def encrypt(name \\ __MODULE__, nonce), do: :persistent_term.get(name) |> crypt(nonce, true)
 
-        case other do
-          :blowfish -> :crypto.crypto_update(cipher_or_key, nonce) <> @pad_64_to_96
-          :des3 -> des_encrypt(nonce, cipher_or_key) <> @pad_64_to_96
-        end
-
-      nil ->
-        raise RuntimeError, "no key set at NoNoncense initialization"
-    end
-  end
-
-  def encrypted_nonce(name, 128) do
-    {machine_id, init_at, time_offset, counters_ref, {_, _, cipher128}} =
-      :persistent_term.get(name)
-
-    nonce = gen_ctr_nonce_128(machine_id, init_at, time_offset, counters_ref)
-
-    case cipher128 do
-      {:aes, cipher128} -> :crypto.crypto_update(cipher128, nonce)
-      {:speck, cipher128} -> Crypto.speck_enc(nonce, cipher128, :speck128_256)
-      nil -> raise RuntimeError, "no key set at NoNoncense initialization"
-    end
-  end
+  @doc """
+  Decrypt a nonce. See `encrypt/2`.
+  """
+  @spec decrypt(atom, nonce()) :: nonce()
+  def decrypt(name \\ __MODULE__, nonce), do: :persistent_term.get(name) |> crypt(nonce, false)
 
   @doc """
   Generate a nonce that is sortable by generation time, like a Snowflake ID. The first 42 bits contain the timestamp.
@@ -363,17 +343,13 @@ defmodule NoNoncense do
       <<0, 15, 27, 215, 172, 0, 0, 0, 0, 0, 0, 0>>
       iex> NoNoncense.sortable_nonce(128)
       <<0, 15, 27, 217, 161, 128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>
-
-      # the generation time can be extracted
-      iex> <<ts::42, _::22>> = <<0, 15, 27, 213, 143, 128, 0, 0>>
-      iex> epoch = ~U[2025-01-01T00:00:00Z] |> DateTime.to_unix(:millisecond)
-      iex> DateTime.from_unix!(ts + epoch, :millisecond)
-      ~U[2025-01-12 17:38:49.534Z]
   """
   @spec sortable_nonce(atom(), nonce_size()) :: nonce()
-  def sortable_nonce(name \\ __MODULE__, bit_size) when bit_size in [64, 96, 128] do
-    {machine_id, _init_at, time_offset, counters_ref, _} = :persistent_term.get(name)
+  def sortable_nonce(name \\ __MODULE__, bit_size)
+  def sortable_nonce(name, bit_size), do: :persistent_term.get(name) |> gen_srt_nonce(bit_size)
 
+  defp gen_srt_nonce(cfg = {machine_id, _, time_offset, counters_ref, _}, bit_size)
+       when bit_size in [64, 96, 128] do
     ts_counter = :atomics.add_get(counters_ref, @sortable_counter_idx, 1)
     # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, we can assume no overflow
     <<current_ts::@ts_bits, new_count::@non_ts_bits_64>> = <<ts_counter::64>>
@@ -388,12 +364,12 @@ defmodule NoNoncense do
       :atomics.compare_exchange(counters_ref, @sortable_counter_idx, ts_counter, new_ts_counter)
       |> case do
         :ok -> to_nonce(now, machine_id, 0, bit_size)
-        _ -> sortable_nonce(name, bit_size)
+        _ -> gen_srt_nonce(cfg, bit_size)
       end
     else
       # larger nonce sizes will not overflow their >= 2^45 bits counters
       if bit_size == 64 and new_count >= @max_count_64 do
-        sortable_nonce(name, bit_size)
+        gen_srt_nonce(cfg, bit_size)
       else
         to_nonce(now, machine_id, new_count, bit_size)
       end
@@ -403,6 +379,11 @@ defmodule NoNoncense do
   @doc """
   Get the timestamp of the nonce as a `DateTime`, given the epoch of the instance.
   This should only be used for `sortable_nonce/2` nonces.
+
+  ## Examples
+
+      iex> <<0, 15, 27, 213, 143, 128, 0, 0>> |> NoNoncense.get_datetime()
+      ~U[2025-01-12 17:38:49.534Z]
   """
   @spec get_datetime(atom(), nonce()) :: DateTime.t()
   def get_datetime(name \\ __MODULE__, nonce) do
@@ -417,18 +398,17 @@ defmodule NoNoncense do
   # Private #
   ###########
 
-  @compile {:inline, wait_until: 2, time_from_offset: 1, to_nonce: 4}
-
+  @compile {:inline, wait_until: 2}
   defp wait_until(timestamp, time_offset) do
     now = time_from_offset(time_offset)
     if timestamp > now, do: :timer.sleep(timestamp - now)
   end
 
+  @compile {:inline, time_from_offset: 1}
   defp time_from_offset(time_offset), do: System.monotonic_time(:millisecond) + time_offset
 
-  defp to_nonce(timestamp, machine_id, count, size)
-
-  defp to_nonce(timestamp, machine_id, count, 64) do
+  @compile {:inline, to_nonce: 4}
+  defp to_nonce(timestamp, machine_id, count, _size = 64) do
     <<timestamp::@ts_bits, machine_id::@id_bits, count::@count_bits_64>>
   end
 
@@ -440,10 +420,20 @@ defmodule NoNoncense do
     <<timestamp::@ts_bits, machine_id::@id_bits, 0::@padding_bits_128, count::64>>
   end
 
-  @des_iv <<0::64>>
+  @compile {:inline, get_cipher: 2}
+  defp get_cipher({_, _, _, _, {cipher, _, _}}, 64), do: cipher
+  defp get_cipher({_, _, _, _, {_, cipher, _}}, 96), do: cipher
+  defp get_cipher({_, _, _, _, {_, _, cipher}}, 128), do: cipher
 
-  @compile {:inline, des_encrypt: 2}
-  defp des_encrypt(nonce, key) do
-    :crypto.crypto_one_time(:des_ede3_cbc, key, @des_iv, nonce, true)
+  @compile {:inline, gen_base_nonce: 3}
+  defp gen_base_nonce(config, :counter, bit_size), do: gen_ctr_nonce(config, bit_size)
+  defp gen_base_nonce(config, :sortable, bit_size), do: gen_srt_nonce(config, bit_size)
+
+  defp crypt(config, nonce, encrypt?), do: bit_size(nonce) |> crypt(config, nonce, encrypt?)
+
+  @compile {:inline, crypt: 4}
+  defp crypt(bit_size, config, nonce, encrypt?) when bit_size in [64, 96, 128] do
+    cipher = get_cipher(config, bit_size)
+    Crypto.crypt(nonce, cipher, encrypt?)
   end
 end
