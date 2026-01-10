@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "tidewave": {
+      "url": "http://localhost:4101/tidewave/mcp",
+      "type": "http"
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    }
+  },
+  "inputs": []
+}

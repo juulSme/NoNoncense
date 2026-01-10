@@ -24,7 +24,8 @@ defmodule NoNoncense.MixProject do
         main: "NoNoncense",
         skip_undefined_reference_warnings_on: ~w()
       ],
-      test_ignore_filters: ["test/test_conflict_guard.ex"]
+      test_ignore_filters: ["test/test_conflict_guard.ex"],
+      aliases: aliases()
     ]
   end
 
@@ -41,7 +42,16 @@ defmodule NoNoncense.MixProject do
       {:ex_doc, "~> 0.36", only: [:dev, :test], runtime: false},
       {:benchmark, github: "juulSme/benchmark_ex", only: [:dev, :test]},
       {:speck_ex, "~> 0.1.0", optional: true},
-      {:redix, "~> 1.0", optional: true, only: [:test]}
+      {:redix, "~> 1.0", optional: true, only: [:test]},
+      {:tidewave, "~> 0.5.0", only: [:dev]},
+      {:bandit, "~> 1.0", only: [:dev]}
+    ]
+  end
+
+  defp aliases do
+    [
+      tidewave:
+        "run --no-halt -e 'Agent.start(fn -> Bandit.start_link(plug: Tidewave, port: 4101) end)'"
     ]
   end
 end

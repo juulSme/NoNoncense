@@ -1,8 +1,7 @@
 Quick pointers
 
 - Language: Elixir (mix project). Entry point: `lib/no_noncense.ex`.
-- Tests: run `mix test` as a bash command. Tests run very quickly, there's no need to run only a specific file of tests.
-- Benchmarks: `bench/nonces.exs` uses the local `benchmark` dependency and demonstrates expected performance characteristics.
+- Tests: run `mix test` as a bash command.
 
 Architecture & important concepts
 
@@ -29,3 +28,8 @@ Common debugging locations
 - `lib/no_noncense.ex` — main logic for nonce generation and timing behavior.
 - `lib/no_noncense/crypto.ex` — key derivation, cipher init and Speck bindings.
 - `test/no_noncense_test.exs` — comprehensive behavior tests and concurrency checks; use it as canonical examples for correct behavior.
+
+Always use Tidewave's tools for evaluating code, querying the database, etc.
+
+Use `get_docs` to access documentation, the `get_source_location` tool to
+find module/function definitions, `project_eval` to run code etc.
