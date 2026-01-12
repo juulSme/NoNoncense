@@ -142,7 +142,7 @@ defmodule NoNoncense do
 
   @init_opt_docs """
     * `:machine_id` (required) - machine ID of the node
-    * `:name` - The name of the nonce factory (default: module name).
+    * `:name` - The name of the nonce factory (default: `NoNoncense`).
     * `:epoch` - Override the configured epoch for this factory instance. Defaults to the NoNoncense epoch (2025-01-01 00:00:00Z).
     * `:base_key` - A key of at least 256 bits (32 bytes) used to derive encryption keys for all nonce sizes.
     * `:key64` - Override the derived key for 64-bit nonces.
@@ -382,7 +382,7 @@ defmodule NoNoncense do
 
   ## Examples
 
-      iex> <<0, 15, 27, 213, 143, 128, 0, 0>> |> NoNoncense.get_datetime()
+      iex> NoNoncense.get_datetime(<<0, 15, 27, 213, 143, 128, 0, 0>>)
       ~U[2025-01-12 17:38:49.534Z]
   """
   @spec get_datetime(atom(), nonce()) :: DateTime.t()
