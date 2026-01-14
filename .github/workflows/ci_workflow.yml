@@ -49,9 +49,9 @@ jobs:
           path: |
             deps
             _build
-          key: cache-v4-${{steps.setup-beam.outputs.elixir-version}}-${{ hashFiles('**/mix.lock') }}
+          key: cache-v4-${{ matrix.os }}-${{steps.setup-beam.outputs.elixir-version}}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            cache-v4-${{steps.setup-beam.outputs.elixir-version}}-
+            cache-v4-${{ matrix.os }}-${{steps.setup-beam.outputs.elixir-version}}-
       - name: Install dependencies
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
