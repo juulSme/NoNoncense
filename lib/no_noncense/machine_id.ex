@@ -31,17 +31,17 @@ defmodule NoNoncense.MachineId do
   ## Examples / doctests
 
       # provide a list of possible node identifiers
-      iex> node_list = ["1.1.1.1", "127.0.0.1", "8.8.8.8", "0.0.0.0"]
+      iex> node_list = [:a, :b, :nonode@nohost, "1.1.1.1"]
       iex> MachineId.id!(node_list: node_list)
       2
 
       # a statically configured ID will override the node list
-      iex> node_list = ["1.1.1.1", "127.0.0.1", "8.8.8.8", "0.0.0.0"]
-      iex> MachineId.id!(machine_id: 1, node_list: node_list)
-      1
+      iex> node_list = [:a, :b, :nonode@nohost, "1.1.1.1"]
+      iex> MachineId.id!(machine_id: 10, node_list: node_list)
+      10
 
       # the node ID must be within the provided range (default 0-511)
-      iex> node_list = ["1.1.1.1", "127.0.0.1", "8.8.8.8", "0.0.0.0"]
+      iex> node_list = [:a, :b, :nonode@nohost, "1.1.1.1"]
       iex> MachineId.id!(max_nodes: 2, node_list: node_list)
       ** (RuntimeError) Node ID 2 out of range 0-1
 
@@ -66,7 +66,6 @@ defmodule NoNoncense.MachineId do
     ([hostname(), fqdn(), Node.self()] ++ ip_addrs())
     |> Enum.reject(&is_nil/1)
     |> :ordsets.from_list()
-    |> IO.inspect()
   end
 
   ###########

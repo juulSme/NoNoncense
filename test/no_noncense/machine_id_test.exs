@@ -4,8 +4,8 @@ defmodule NoNoncense.MachineIdTest do
 
   describe "id!/1" do
     test "the ordering of your node list has no influence" do
-      node_list = ["127.0.0.1", "8.8.8.8", "1.1.1.1"]
-      assert 1 == MachineId.id!(node_list: node_list)
+      node_list = [:a, "1.1.1.1", :b, :nonode@nohost]
+      assert 2 == MachineId.id!(node_list: node_list)
     end
   end
 
