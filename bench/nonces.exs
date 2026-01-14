@@ -23,7 +23,7 @@ NoNoncense.init(
   cipher96: :des3
 )
 
-# artifially set back the clock, so that 64-bits nonces don't hit their time-based rate limit
+# artifially set back the clock, so that 64-bit nonces don't hit their time-based rate limit
 {a, init_at, c, d, e} = :persistent_term.get(NoNoncense)
 ten_days = 10 * 24 * 60 * 60 * 1000
 :persistent_term.put(NoNoncense, {a, init_at - ten_days, c, d, e})

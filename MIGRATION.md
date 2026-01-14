@@ -15,7 +15,7 @@ Version 1.0.0 introduces breaking changes to the encrypted nonce API. This guide
 > ⚠️ **WARNING**: If you are using 0.x.x encrypted nonces in production, you **MUST**:
 >
 > - pass your old encryption key(s) to `NoNoncense.init/1` using the `:key64`, `:key96` and `:key128` opts
-> - (when using encrypted 64 and/or 96-bits nonces) pass algorithm `:des3` to `NoNoncense.init/1` using the `:cipher64` and `:cipher96` opts
+> - (when using encrypted 64 and/or 96-bit nonces) pass algorithm `:des3` to `NoNoncense.init/1` using the `:cipher64` and `:cipher96` opts
 >
 > If you don't, you will **break the uniqueness guarantee** of your nonces, potentially causing collisions in your database or application.
 

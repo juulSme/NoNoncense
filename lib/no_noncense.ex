@@ -27,7 +27,7 @@ defmodule NoNoncense do
 
   Counter nonces are basically a counter that is initialized with the machine (node) start time. An overflow of a nonce's counter bits will trigger a timestamp increase by 1ms, implying that the timestamp effectively functions as an extended counter. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the timestamp catches up to the actual time.
 
-  That means that the maximum *sustained* rate is 8M/s per machine for 64-bits nonces (which have 13 counter bits). In practice it is unlikely that nonces are generated at such an extreme sustained rate, and the timestamp will lag behind the actual time. This creates "saved up seconds" that can be used to *burst* to even higher rates. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M nonces as quickly as hardware will allow. Benchmarking shows rates in the tens of millions per second are attainable this way.
+  That means that the maximum *sustained* rate is 8M/s per machine for 64-bit nonces (which have 13 counter bits). In practice it is unlikely that nonces are generated at such an extreme sustained rate, and the timestamp will lag behind the actual time. This creates "saved up seconds" that can be used to *burst* to even higher rates. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M nonces as quickly as hardware will allow. Benchmarking shows rates in the tens of millions per second are attainable this way.
 
   96/128 bits counter nonces have such large counters that they can be generated at a practically unlimited sustained rate of >= 2^45 nonces per ms per machine, meaning they will never catch the actual time, and the practical rate is only limited by hardware.
 
@@ -40,7 +40,7 @@ defmodule NoNoncense do
 
   Sortable nonces have an accurate creation timestamp (as opposed to counter nonces). This makes them equivalent to [Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID), apart from the slightly altered bit distribution of NoNoncense nonces (42 instead of 41 timestamp bits, 9 instead of 10 ID bits, no unused bit).
 
-  This has some implications. Again, 96/128-bits sortable nonces can be generated as quickly as your hardware can go. However, the 64-bits variant can be generated at 8M/s per machine and can't ever burst beyond that (the "saved-up-seconds" mechanic of counter nonces does not apply here). This should of course be plenty for most applications.
+  This has some implications. Again, 96/128-bit sortable nonces can be generated as quickly as your hardware can go. However, the 64-bit variant can be generated at 8M/s per machine and can't ever burst beyond that (the "saved-up-seconds" mechanic of counter nonces does not apply here). This should of course be plenty for most applications.
 
   ### Encrypted nonces
 
@@ -49,7 +49,7 @@ defmodule NoNoncense do
   - Info leak: none.
   - Crypto: same as counter nonces, but no info leaks. Additionally, suitable for block cipher modes that require unpredictable IVs, like CBC and CFB.
 
-  These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. For more info, see [nonce encryption](#module-nonce-encryption).
+  These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. **It is strongly recommended that you read [nonce encryption](#module-nonce-encryption) before use.**
 
   > #### Don't change the key or cipher {: .warning}
   >
@@ -93,7 +93,7 @@ defmodule NoNoncense do
       iex> <<_::128>> = NoNoncense.sortable_nonce(128)
 
       # generate encrypted nonces
-      # be sure to read the NoNoncense docs before using 64/96 bits encrypted nonces
+      # be sure to read the NoNoncense docs before using 64/96-bit encrypted nonces
       iex> <<_::64>> = NoNoncense.encrypted_nonce(64)
       iex> <<_::96>> = NoNoncense.encrypted_nonce(96)
       iex> <<_::128>> = NoNoncense.encrypted_nonce(128)
@@ -108,27 +108,23 @@ defmodule NoNoncense do
 
   ## Nonce encryption
 
-  By encrypting a nonce, the timestamp, machine ID and message ordering information leak can be prevented. However, we wish to encrypt in a way that **maintains the uniqueness guarantee** of the input counter nonce. So 2^64 unique inputs should generate 2^64 unique outputs, same for the other sizes.
+  By encrypting a nonce, the timestamp, machine ID and sequence information leak can be prevented. However, we wish to encrypt in a way that **maintains the uniqueness guarantee** of the input counter nonce. We can achieve this by using a block cipher where the cipher's block size matches the nonce's bit-length. Using a larger cipher and truncating the output would break uniqueness and lead to collisions.
 
-  IETF has some [wisdom to share](https://datatracker.ietf.org/doc/html/rfc8439#section-4) on the topic of nonce encryption (in the context of ChaCha20 / Poly1305 nonces):
-
-  > Counters and LFSRs are both acceptable ways of generating unique nonces, as is encrypting a counter using a block cipher with a 64-bit block size such as DES. Note that it is not acceptable to use a truncation of a counter encrypted with block ciphers with 128-bit or 256-bit blocks, because such a truncation may repeat after a short time.
-
-  There are some interesting things to unpick there. Why can't we use higher ciphers with a larger block size? As it turns out, block ciphers only generate unique outputs for inputs of at least their block size (128 bits for most modern ciphers, notably AES). For example, encrypting a 64-bit nonce with AES would produce a unique 128-bit ciphertext, but that ciphertext can't be reduced back to 64 bits without losing the uniqueness property. Sadly, this also holds for the streaming modes of these ciphers, which still use blocks internally to generate the keystream. That means we can just use AES256 ECB (we only encrypt unique blocks) for 128-bit nonces.
-
-  > #### 128-bit encrypted nonces {: .tip}
+  > #### Cipher recommendations {: .info}
   >
-  > We have AES256-encrypted 128-bit nonces that are unique and indistinguishable from random noise.
+  > Use **AES** for 128-bit nonces. Use **Speck** for 64 and 96-bit nonces if possible. If sticking to OTP, use **Blowfish** on Linux and **3DES** elsewhere.
 
-  For 64/96 bits nonces we need a block cipher that operates on matching block sizes, which are exceedingly rare. One such cipher is Speck, designed by the NSA in 2013 for lightweight encryption. The optional dependency `SpeckEx`, backed by (precompiled) Rust crate `speck_cipher`, enables support for it. It is very fast; in line with hardware-accelerated AES. Be aware that SpeckEx should be considered experimental right now; it has not been reviewed or audited; although the primitive block cipher mode used by `NoNoncense` matches official test vectors.
+  ### The Deep Dive
 
-  If you only want to use OTP ciphers, we are limited to DES, 3DES, and BlowFish. DES is broken and can merely be considered obfuscation at this point, despite the IETF quote (from 2018). 3DES is slow (it is still offered for backwards compatibility). Blowfish performs well after initial key expansion, and is secure since we don't have to worry about the birthday attack (all of our input blocks are unique, so all of our output blocks are unique, so there will be no collisions).
+  Block ciphers essentially map each block of data to another block of the same size. A block cipher with 128-bit blocks would create 2^128 unique outputs for 2^128 unique inputs. Most modern ciphers use 128-bit blocks, notably "gold standard" AES, making it the perfect choice for 128-bit nonces.
 
-  For 96-bit nonces there are no block ciphers whatsoever to choose from in OTP. All we can do is generate a 64-bits encrypted nonce and postfix 32 zero-bits. That way the whole nonce is unique, despite the predictable tail. You should determine for yourself if you can live with that. The only other option, and the main reason it was added, is using `SpeckEx`, because Speck has a 96-bits variant that can encrypt a full 96-bits counter nonce, without needing any padding.
+  The problem is that we can't use a 128-bit block cipher for 64/96-bit nonces, because we can't truncate the output. If we truncated a 128-bit output to a single byte, for example, we would end up with only 256 unique outputs; our 2^128 unique inputs would produce quite a few duplicates. This holds for less extreme truncation as well, so that's why we need ciphers with 64 and 96-bit block sizes, respectively. Unfortunately these are exceedingly rare because they are no longer secure for general-purpose usage.
 
-  > #### 64/96-bit encrypted nonces {: .info}
-  >
-  > We have either Speck, Blowfish or 3DES encrypted nonces. Speck offers the best security and performance, but is experimental right now. Of the OTP ciphers, the default Blowfish is fast and secure. For 96-bits nonces, using OTP's Blowfish or 3DES results in a padded 64-bits encrypted nonce, which may or may not be good enough for your use case. If it is not, your only option is using Speck.
+  One such cipher is Speck, designed by the NSA in 2013 for lightweight encryption. It has both 64 and 96-bit variants. The optional dependency `SpeckEx`, backed by (precompiled) Rust crate `speck_cipher`, enables support for it. It is very fast; in line with hardware-accelerated AES. Be aware that although the primitive block cipher mode used by `NoNoncense` matches official test vectors, `SpeckEx` has not been reviewed or audited.
+
+  If you only want to use OTP (OpenSSL) ciphers, we are limited to DES, 3DES, and BlowFish which all operate on 64-bit blocks. Both DES and Blowfish have been moved to the legacy ciphers list in OpenSSL 3.0, which means they are not available on all systems (notably Mac and Windows). Blowfish is the default because it offers the best performance by miles and is (still) available in Linux distributions, on which Elixir applications are likely to run. 3DES is a fallback option if that doesn't work for you and you don't want to use Speck.
+
+  For 96-bit nonces there are no block ciphers whatsoever to choose from in OTP. All we can do is generate a 64-bit encrypted nonce and postfix 32 zero-bit. That way the nonce as a whole is unique, despite the predictable tail. You should determine for yourself if you can live with that. The only other option - and the main reason it exists in the first place - is using `SpeckEx`, because Speck has a 96-bit variant that can encrypt a full 96-bit counter nonce, without needing any padding.
   """
   alias NoNoncense.Crypto
   require Logger
@@ -220,7 +216,7 @@ defmodule NoNoncense do
   end
 
   @doc """
-  Generate a new 64/96/128-bits counter-like nonce.
+  Generate a new 64/96/128-bit counter-like nonce.
 
   ## Examples
 
@@ -238,7 +234,7 @@ defmodule NoNoncense do
   def nonce(name, bit_size), do: :persistent_term.get(name) |> gen_ctr_nonce(bit_size)
 
   defp gen_ctr_nonce({machine_id, init_at, time_offset, counters_ref, _}, 64) do
-    # we can generate 10B nonce/s for 60 years straight before the unsigned 64-bits int overflows
+    # we can generate 10B nonce/s for 60 years straight before the unsigned 64-bit int overflows
     # so we don't need to worry about the atomic counter itself overflowing
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
 

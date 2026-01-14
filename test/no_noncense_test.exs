@@ -137,7 +137,7 @@ defmodule NoNoncenseTest do
     end
 
     test "raises on unsupported alg" do
-      assert_raise ArgumentError, "alg aes is not supported for 64-bits nonces", fn ->
+      assert_raise ArgumentError, "alg aes is not supported for 64-bit nonces", fn ->
         NoNoncense.init(
           name: @name,
           machine_id: 1,
@@ -146,7 +146,7 @@ defmodule NoNoncenseTest do
         )
       end
 
-      assert_raise ArgumentError, "alg aes is not supported for 96-bits nonces", fn ->
+      assert_raise ArgumentError, "alg aes is not supported for 96-bit nonces", fn ->
         NoNoncense.init(
           name: @name,
           machine_id: 1,
@@ -514,19 +514,19 @@ defmodule NoNoncenseTest do
       end
     end
 
-    test "generates new 64-bits nonces" do
+    test "generates new 64-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 64)
       assert bit_size(nonce) == 64
       assert nonce != NoNoncense.encrypted_nonce(@name, 64)
     end
 
-    test "generates new 96-bits nonces" do
+    test "generates new 96-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 96)
       assert bit_size(nonce) == 96
       assert nonce != NoNoncense.encrypted_nonce(@name, 96)
     end
 
-    test "generates new 128-bits nonces" do
+    test "generates new 128-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 128)
       assert bit_size(nonce) == 128
       assert nonce != NoNoncense.encrypted_nonce(@name, 128)
@@ -609,13 +609,13 @@ defmodule NoNoncenseTest do
       )
     end
 
-    test "generates new 64-bits nonces" do
+    test "generates new 64-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 64)
       assert bit_size(nonce) == 64
       assert nonce != NoNoncense.encrypted_nonce(@name, 64)
     end
 
-    test "generates new 96-bits nonces" do
+    test "generates new 96-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 96)
       assert bit_size(nonce) == 96
       assert nonce != NoNoncense.encrypted_nonce(@name, 96)
@@ -623,7 +623,7 @@ defmodule NoNoncenseTest do
       assert tail != 0
     end
 
-    test "generates new 128-bits nonces" do
+    test "generates new 128-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 128)
       assert bit_size(nonce) == 128
       assert nonce != NoNoncense.encrypted_nonce(@name, 128)
@@ -656,13 +656,13 @@ defmodule NoNoncenseTest do
       )
     end
 
-    test "generates new 64-bits nonces" do
+    test "generates new 64-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 64)
       assert bit_size(nonce) == 64
       assert nonce != NoNoncense.encrypted_nonce(@name, 64)
     end
 
-    test "generates new 96-bits nonces" do
+    test "generates new 96-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 96)
       assert bit_size(nonce) == 96
       assert nonce != NoNoncense.encrypted_nonce(@name, 96)

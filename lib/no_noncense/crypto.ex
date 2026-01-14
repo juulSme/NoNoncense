@@ -91,7 +91,7 @@ defmodule NoNoncense.Crypto do
     do: raise(ArgumentError, "speck128 key size must be 256 bits")
 
   def maybe_gen_key(_, _, alg, size),
-    do: raise(ArgumentError, "alg #{alg} is not supported for #{size}-bits nonces")
+    do: raise(ArgumentError, "alg #{alg} is not supported for #{size}-bit nonces")
 
   # the IV-less ciphers that we use can be pre-initialized
   defp maybe_init_cipher(alg_key_pair)
@@ -141,37 +141,37 @@ defmodule NoNoncense.Crypto do
   def crypt(nonce, cipher, encrypt?)
   def crypt(_, nil, _), do: raise(RuntimeError, "no key set at NoNoncense initialization")
 
-  # 64-bits Speck
+  # 64-bit Speck
   def crypt(<<n::binary-8>>, {:speck, c}, true), do: speck_enc(n, c, :speck64_128)
   def crypt(<<n::binary-8>>, {:speck, c}, false), do: speck_dec(n, c, :speck64_128)
 
-  # 64-bits Blowfish
+  # 64-bit Blowfish
   def crypt(<<n::binary-8>>, {:blowfish, c, _}, true), do: :crypto.crypto_update(c, n)
   def crypt(<<n::binary-8>>, {:blowfish, _, c}, false), do: :crypto.crypto_update(c, n)
 
-  # 64-bits 3DES
+  # 64-bit 3DES
   def crypt(<<n::binary-8>>, {:des3, key}, encrypt?), do: des_crypt(n, key, encrypt?)
 
-  # 96-bits Speck
+  # 96-bit Speck
   def crypt(<<n::binary-12>>, {:speck, c}, true), do: speck_enc(n, c, :speck96_144)
   def crypt(<<n::binary-12>>, {:speck, c}, false), do: speck_dec(n, c, :speck96_144)
 
-  # 96-bits Blowfish
+  # 96-bit Blowfish
   def crypt(<<n::binary-8, @pad_64_to_96>>, {:blowfish, c, _}, true),
     do: :crypto.crypto_update(c, n) <> @pad_64_to_96
 
   def crypt(<<n::binary-8, @pad_64_to_96>>, {:blowfish, _, c}, false),
     do: :crypto.crypto_update(c, n) <> @pad_64_to_96
 
-  # 96-bits 3DES
+  # 96-bit 3DES
   def crypt(<<n::binary-8, @pad_64_to_96>>, {:des3, key}, encrypt?),
     do: des_crypt(n, key, encrypt?) <> @pad_64_to_96
 
-  # 128-bits AES
+  # 128-bit AES
   def crypt(<<n::binary-16>>, {:aes, c, _}, true), do: :crypto.crypto_update(c, n)
   def crypt(<<n::binary-16>>, {:aes, _, c}, false), do: :crypto.crypto_update(c, n)
 
-  # 128-bits Speck
+  # 128-bit Speck
   def crypt(<<n::binary-16>>, {:speck, c}, true), do: speck_enc(n, c, :speck128_256)
   def crypt(<<n::binary-16>>, {:speck, c}, false), do: speck_dec(n, c, :speck128_256)
 
