@@ -20,15 +20,19 @@ jobs:
           - elixir: 1.14.x
             otp: 25.x
             os: ubuntu-latest
+            command: mix test
           - elixir: 1.19.x
             otp: 28.x
             os: ubuntu-latest
+            command: mix test
           - elixir: 1.19.x
             otp: 28.x
             os: windows-2022
+            command: mix test --exclude blowfish
           - elixir: 1.19.x
             otp: 28.x
             os: macos-latest
+            command: mix test --exclude blowfish
 
     steps:
       - name: Checkout code
@@ -60,7 +64,7 @@ jobs:
       - name: Compile code (warnings as errors)
         run: mix compile --warnings-as-errors
       - name: Run tests
-        run: mix test
+        run: ${{ matrix.command }}
       - name: Node shutdown on machine ID conflict test
         run: ./test/test_conflict_guard.sh
       - name: Create docs

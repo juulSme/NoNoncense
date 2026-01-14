@@ -111,6 +111,7 @@ defmodule NoNoncenseTest do
       end
     end
 
+    @tag :blowfish
     test "defaults to OTP algorithms" do
       NoNoncense.init(name: @name, machine_id: 1, base_key: :crypto.strong_rand_bytes(32))
 
@@ -142,7 +143,8 @@ defmodule NoNoncenseTest do
           name: @name,
           machine_id: 1,
           base_key: :crypto.strong_rand_bytes(32),
-          cipher64: :aes
+          cipher64: :aes,
+          cipher96: :des3
         )
       end
 
@@ -151,6 +153,7 @@ defmodule NoNoncenseTest do
           name: @name,
           machine_id: 1,
           base_key: :crypto.strong_rand_bytes(32),
+          cipher64: :des3,
           cipher96: :aes
         )
       end
@@ -159,7 +162,13 @@ defmodule NoNoncenseTest do
     test "defaults to derived keys" do
       base_key = :crypto.strong_rand_bytes(32)
 
-      NoNoncense.init(name: @name, machine_id: 1, base_key: base_key)
+      NoNoncense.init(
+        name: @name,
+        machine_id: 1,
+        base_key: base_key,
+        cipher64: :des3,
+        cipher96: :des3
+      )
 
       NoNoncense.encrypted_nonce(@name, 64)
       NoNoncense.encrypted_nonce(@name, 96)
@@ -169,15 +178,17 @@ defmodule NoNoncenseTest do
     test "uses key overrides" do
       base_key = :crypto.strong_rand_bytes(32)
 
-      key64 = :crypto.strong_rand_bytes(16)
-      key96 = :crypto.strong_rand_bytes(16)
+      key64 = :crypto.strong_rand_bytes(24)
+      key96 = :crypto.strong_rand_bytes(24)
       key128 = :crypto.strong_rand_bytes(32)
 
       NoNoncense.init(
         name: @name,
         machine_id: 1,
         base_key: base_key,
+        cipher64: :des3,
         key64: key64,
+        cipher96: :des3,
         key96: key96,
         key128: key128
       )
@@ -188,16 +199,29 @@ defmodule NoNoncenseTest do
       enc_nonce_128 = NoNoncense.encrypted_nonce(@name, 128)
 
       assert enc_nonce_64 ==
-               :crypto.crypto_one_time(:blowfish_ecb, key64, <<b::51, c1 + 1::13>>, true)
+               :crypto.crypto_one_time(
+                 :des_ede3_cbc,
+                 key64,
+                 <<0::64>>,
+                 <<b::51, c1 + 1::13>>,
+                 true
+               )
 
       assert enc_nonce_96 ==
-               :crypto.crypto_one_time(:blowfish_ecb, key96, <<b::51, c1 + 2::13>>, true) <>
+               :crypto.crypto_one_time(
+                 :des_ede3_cbc,
+                 key96,
+                 <<0::64>>,
+                 <<b::51, c1 + 2::13>>,
+                 true
+               ) <>
                  <<0::32>>
 
       assert enc_nonce_128 ==
                :crypto.crypto_one_time(:aes_256_ecb, key128, <<b::51, 0::64, c1 + 3::13>>, true)
     end
 
+    @tag :blowfish
     test "verifies key override lengths" do
       base_key = :crypto.strong_rand_bytes(32)
 
@@ -456,6 +480,7 @@ defmodule NoNoncenseTest do
   end
 
   describe "inialized ciphers" do
+    @tag :blowfish
     test "Blowfish crypto_one_time matches concurrent shared-init-ref crypto_update" do
       test_concurrent_shared_init_ref_enc(:blowfish_ecb, 16, 8)
     end
@@ -497,50 +522,35 @@ defmodule NoNoncenseTest do
     assert crypto_one_time_res == results
   end
 
-  describe "encrypted_nonce/2 with blowfish and aes" do
+  describe "encrypted_nonce/2 with blowfish" do
     setup do
       base_key = :crypto.strong_rand_bytes(32)
       NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch, base_key: base_key)
       [base_key: base_key]
     end
 
-    test "raises without key" do
-      NoNoncense.init(machine_id: 0, name: :raise_test)
-
-      for size <- [64, 96, 128] do
-        assert_raise RuntimeError, "no key set at NoNoncense initialization", fn ->
-          NoNoncense.encrypted_nonce(:raise_test, size)
-        end
-      end
-    end
-
+    @tag :blowfish
     test "generates new 64-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 64)
       assert bit_size(nonce) == 64
       assert nonce != NoNoncense.encrypted_nonce(@name, 64)
     end
 
+    @tag :blowfish
     test "generates new 96-bit nonces" do
       nonce = NoNoncense.encrypted_nonce(@name, 96)
       assert bit_size(nonce) == 96
       assert nonce != NoNoncense.encrypted_nonce(@name, 96)
     end
 
-    test "generates new 128-bit nonces" do
-      nonce = NoNoncense.encrypted_nonce(@name, 128)
-      assert bit_size(nonce) == 128
-      assert nonce != NoNoncense.encrypted_nonce(@name, 128)
-    end
-
-    test "actually uses blowfish / aes", %{base_key: base_key} do
+    @tag :blowfish
+    test "actually uses blowfish", %{base_key: base_key} do
       {_, key64} = Crypto.maybe_gen_key(nil, base_key, :blowfish, 64)
       {_, key96} = Crypto.maybe_gen_key(nil, base_key, :blowfish, 96)
-      {_, key128} = Crypto.maybe_gen_key(nil, base_key, :aes, 128)
 
       <<b::51, c1::13>> = NoNoncense.nonce(@name, 64)
       enc_nonce_64 = NoNoncense.encrypted_nonce(@name, 64)
       enc_nonce_96 = NoNoncense.encrypted_nonce(@name, 96)
-      enc_nonce_128 = NoNoncense.encrypted_nonce(@name, 128)
 
       assert enc_nonce_64 ==
                :crypto.crypto_one_time(:blowfish_ecb, key64, <<b::51, c1 + 1::13>>, true)
@@ -548,13 +558,11 @@ defmodule NoNoncenseTest do
       assert enc_nonce_96 ==
                :crypto.crypto_one_time(:blowfish_ecb, key96, <<b::51, c1 + 2::13>>, true) <>
                  <<0::32>>
-
-      assert enc_nonce_128 ==
-               :crypto.crypto_one_time(:aes_256_ecb, key128, <<b::51, 0::64, c1 + 3::13>>, true)
     end
 
     @tag timeout: :infinity
     @tag :very_slow
+    @tag :blowfish
     # requires redis / valkey
     test "find collision" do
       conns =
@@ -644,16 +652,30 @@ defmodule NoNoncenseTest do
     end
   end
 
-  describe "encrypted_nonce/2 with 3des" do
+  describe "encrypted_nonce/2 with 3des and aes" do
     setup do
+      base_key = :crypto.strong_rand_bytes(32)
+
       NoNoncense.init(
         machine_id: 0,
         name: @name,
         epoch: @epoch,
-        base_key: :crypto.strong_rand_bytes(32),
+        base_key: base_key,
         cipher64: :des3,
         cipher96: :des3
       )
+
+      [base_key: base_key]
+    end
+
+    test "raises without key" do
+      NoNoncense.init(machine_id: 0, name: :raise_test)
+
+      for size <- [64, 96, 128] do
+        assert_raise RuntimeError, "no key set at NoNoncense initialization", fn ->
+          NoNoncense.encrypted_nonce(:raise_test, size)
+        end
+      end
     end
 
     test "generates new 64-bit nonces" do
@@ -668,12 +690,20 @@ defmodule NoNoncenseTest do
       assert nonce != NoNoncense.encrypted_nonce(@name, 96)
     end
 
-    test "are actually 3des-encrypted" do
+    test "generates new 128-bit nonces" do
+      nonce = NoNoncense.encrypted_nonce(@name, 128)
+      assert bit_size(nonce) == 128
+      assert nonce != NoNoncense.encrypted_nonce(@name, 128)
+    end
+
+    test "are actually 3des/aes-encrypted", %{base_key: base_key} do
       %{cipher64: {_, key64}, cipher96: {_, key96}} = get_state(@name)
+      {_, key128} = Crypto.maybe_gen_key(nil, base_key, :aes, 128)
 
       <<b::51, c1::13>> = NoNoncense.nonce(@name, 64)
       enc_nonce_64 = NoNoncense.encrypted_nonce(@name, 64)
       enc_nonce_96 = NoNoncense.encrypted_nonce(@name, 96)
+      enc_nonce_128 = NoNoncense.encrypted_nonce(@name, 128)
 
       assert enc_nonce_64 ==
                :crypto.crypto_one_time(
@@ -693,6 +723,9 @@ defmodule NoNoncenseTest do
                  true
                ) <>
                  <<0::32>>
+
+      assert enc_nonce_128 ==
+               :crypto.crypto_one_time(:aes_256_ecb, key128, <<b::51, 0::64, c1 + 3::13>>, true)
     end
   end
 
@@ -702,7 +735,9 @@ defmodule NoNoncenseTest do
         machine_id: 0,
         name: @name,
         epoch: @epoch,
-        base_key: :crypto.strong_rand_bytes(32)
+        base_key: :crypto.strong_rand_bytes(32),
+        cipher64: :speck,
+        cipher96: :speck
       )
     end
 
@@ -758,6 +793,19 @@ defmodule NoNoncenseTest do
         assert plaintext == NoNoncense.decrypt(@name, ciphertext)
       end
     end
+  end
+
+  describe "encrypt/2 and decrypt/2 with 3DES" do
+    setup do
+      NoNoncense.init(
+        machine_id: 0,
+        name: @name,
+        epoch: @epoch,
+        base_key: :crypto.strong_rand_bytes(32),
+        cipher64: :des3,
+        cipher96: :des3
+      )
+    end
 
     test "rejects 96 bits nonces with non-zero tail" do
       assert_raise FunctionClauseError, fn -> NoNoncense.encrypt(@name, <<1::96>>) end
@@ -802,7 +850,9 @@ defmodule NoNoncenseTest do
         machine_id: 0,
         name: @name,
         epoch: @epoch,
-        base_key: :crypto.strong_rand_bytes(32)
+        base_key: :crypto.strong_rand_bytes(32),
+        cipher64: :speck,
+        cipher96: :speck
       )
     end
 
@@ -846,6 +896,7 @@ defmodule NoNoncenseTest do
         name: @name,
         epoch: @epoch,
         base_key: :crypto.strong_rand_bytes(32),
+        cipher64: :speck,
         cipher96: :speck
       )
     end

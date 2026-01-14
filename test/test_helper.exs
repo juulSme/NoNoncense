@@ -1,1 +1,1 @@
-ExUnit.start(exclude: [very_slow: true])
+ExUnit.start(exclude: [:very_slow])
