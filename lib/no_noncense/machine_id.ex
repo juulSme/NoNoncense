@@ -66,6 +66,7 @@ defmodule NoNoncense.MachineId do
     ([hostname(), fqdn(), Node.self()] ++ ip_addrs())
     |> Enum.reject(&is_nil/1)
     |> :ordsets.from_list()
+    |> IO.inspect()
   end
 
   ###########
