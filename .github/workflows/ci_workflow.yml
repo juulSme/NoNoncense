@@ -67,6 +67,7 @@ jobs:
         run: ${{ matrix.command }}
       - name: Node shutdown on machine ID conflict test
         run: ./test/test_conflict_guard.sh
+        if: matrix.os == 'ubuntu-latest'
       - name: Create docs
         if: matrix.elixir == '1.19.x' && matrix.os == 'ubuntu-latest'
         run: mix docs
