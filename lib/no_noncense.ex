@@ -4,7 +4,7 @@ defmodule NoNoncense do
 
   Nonces are unique values that are generated once and never repeated within your system. They have many practical uses including:
 
-  - **ID Generation**: Create unique identifiers for database records, API requests, or any other resource in distributed systems
+  - **ID Generation**: Create unique identifiers for database records, API requests, or any other resource in distributed systems. If this is your use case, have a look at [Once](https://hexdocs.pm/once/Once.html).
   - **Cryptographic Operations**: Serve as initialization vectors (IVs) for encryption algorithms, ensuring security in block cipher modes
   - **Deduplication**: Identify and prevent duplicate operations or messages in distributed systems
 
@@ -13,47 +13,6 @@ defmodule NoNoncense do
   > #### Read the migration guide {: .warning}
   >
   > If you're upgrading from v0.x.x and you use encrypted nonces, please read the [Migration Guide](MIGRATION.md) carefully - there are breaking changes that require attention to preserve uniqueness guarantees.
-
-  ## Nonce types
-
-  Several types of nonces can be generated, although they share their basic composition. The first 42 bits are a millisecond-precision timestamp (allows for ~139 years of operation), relative to the NoNoncense epoch (2025-01-01 00:00:00 UTC) by default. The next 9 bits are the machine ID (allows for 512 machines). The remaining bits are a per-machine counter.
-
-  ### Counter nonces
-
-  - Features: unique.
-  - Generation rate: very high.
-  - Info leak: medium (machine init time, creation order).
-  - Crypto: technically suitable for block ciphers in modes that require a nonce that is unique but not necessarily unpredictable (like CTR, OFB, CCM, and GCM), and some streaming ciphers. Only when some info leak is acceptable.
-
-  Counter nonces are basically a counter that is initialized with the machine (node) start time. An overflow of a nonce's counter bits will trigger a timestamp increase by 1ms, implying that the timestamp effectively functions as an extended counter. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the timestamp catches up to the actual time.
-
-  That means that the maximum *sustained* rate is 8M/s per machine for 64-bit nonces (which have 13 counter bits). In practice it is unlikely that nonces are generated at such an extreme sustained rate, and the timestamp will lag behind the actual time. This creates "saved up seconds" that can be used to *burst* to even higher rates. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M nonces as quickly as hardware will allow. Benchmarking shows rates in the tens of millions per second are attainable this way.
-
-  96/128 bits counter nonces have such large counters that they can be generated at a practically unlimited sustained rate of >= 2^45 nonces per ms per machine, meaning they will never catch the actual time, and the practical rate is only limited by hardware.
-
-  ### Sortable nonces (Snowflake IDs)
-
-  - Features: unique, time-sortable.
-  - Generation rate: high.
-  - Info leak: high (creation time, creation order).
-  - Crypto: not recommended. They leak more info than counter nonces but are slightly slower to generate.
-
-  Sortable nonces have an accurate creation timestamp (as opposed to counter nonces). This makes them equivalent to [Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID), apart from the slightly altered bit distribution of NoNoncense nonces (42 instead of 41 timestamp bits, 9 instead of 10 ID bits, no unused bit).
-
-  This has some implications. Again, 96/128-bit sortable nonces can be generated as quickly as your hardware can go. However, the 64-bit variant can be generated at 8M/s per machine and can't ever burst beyond that (the "saved-up-seconds" mechanic of counter nonces does not apply here). This should of course be plenty for most applications.
-
-  ### Encrypted nonces
-
-  - Features: unique, unpredictable.
-  - Generation rate: medium (scales well with CPU cores).
-  - Info leak: none.
-  - Crypto: same as counter nonces, but no info leaks. Additionally, suitable for block cipher modes that require unpredictable IVs, like CBC and CFB.
-
-  These nonces are encrypted in a way that preserves their uniqueness, but they are unpredictable and don't leak information. **It is strongly recommended that you read [nonce encryption](#module-nonce-encryption) before use.**
-
-  > #### Don't change the key or cipher {: .warning}
-  >
-  > Once you are using a cipher and a key, you **must never** change them. Doing so breaks the uniqueness guarantees of all encrypted nonces of the affected NoNoncense instance. The only way to change the key or the cipher is by regenerating / invalidating all previously generated encrypted nonces.
 
   ## Usage
 
@@ -98,33 +57,94 @@ defmodule NoNoncense do
       iex> <<_::96>> = NoNoncense.encrypted_nonce(96)
       iex> <<_::128>> = NoNoncense.encrypted_nonce(128)
 
+  ## Anatomy of a nonce
 
-  ## Uniqueness guarantees
+  While there are different types of nonces, they share a common binary composition.
 
-  Nonces are guaranteed to be unique if:
-  - Machine IDs are unique for each node (`NoNoncense.MachineId` and `NoNoncense.MachineId.ConflictGuard` can help there).
-  - Individual machines maintain a somewhat accurate clock (specifically, the UTC clock has to have progressed between node restarts).
-  - (Sortable nonces only) the machine clock has to be accurate.
+  * **42 bits:** Millisecond-precision timestamp (relative to the configured epoch, which is 2025-01-01 00:00 by default).
+  * **9 bits:** Machine ID (supports up to 512 nodes).
+  * **Remaining bits:** Per-machine counter (size depends on total nonce length).
 
-  ## Nonce encryption
+  ## Nonce types
 
-  By encrypting a nonce, the timestamp, machine ID and sequence information leak can be prevented. However, we wish to encrypt in a way that **maintains the uniqueness guarantee** of the input counter nonce. We can achieve this by using a block cipher where the cipher's block size matches the nonce's bit-length. Using a larger cipher and truncating the output would break uniqueness and lead to collisions.
+  Choose the type that best fits your security and performance requirements.
+
+  | Type          | Features              | Generation rate                  | Info leak                       | Suitable for crypto |
+  | :------------ | :-------------------- | :------------------------------- | :------------------------------ | :------------------ |
+  | **Counter**   | Unique                | ⏩⏩⏩ Very high (burst capable) | 🟠 Medium (boot time, sequence) | ❌ No               |
+  | **Sortable**  | Unique, time-sortable | ⏩⏩ High                        | ❌ High (create time, sequence) | ❌ No               |
+  | **Encrypted** | Unique, unpredictable | ⏩⏩ High (scales with cores)    | ✅ None                         | ✅ Yes              |
+
+  Nonces are guaranteed to be unique **if and only if**:
+  - You use one instance and one nonce type. Only use separate instances for separate purposes (database IDs and encryption IVs, for example).
+  - Machine IDs are unique for each node (`NoNoncense.MachineId` and `NoNoncense.MachineId.ConflictGuard` can help with that).
+  - Nodes maintain a somewhat accurate clock (specifically, the UTC clock must progress between node restarts).
+  - **Sortable nonces only:** the machine clock has to be accurate.
+  - **Encrypted nonces only:** the cipher and key must not be changed.
+
+  ### Counter nonces
+
+  Counter nonces are basically a counter that is initialized with the machine (node) start time. An overflow of a nonce's counter bits will trigger a timestamp increase by 1ms, implying that the timestamp effectively functions as an extended counter. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the timestamp catches up to the actual time.
+
+  That means that the maximum *sustained* rate is 8M/s per machine for 64-bit nonces (which have 13 counter bits). In practice it is unlikely that nonces are generated at such an extreme sustained rate, and the timestamp will lag behind the actual time. This creates "saved up seconds" that can be used to *burst* to even higher rates. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M nonces as quickly as hardware will allow. Benchmarking shows rates in the tens of millions per second are attainable this way.
+
+  96/128 bits counter nonces have such large counters that they can be generated at a practically unlimited sustained rate of >= 2^45 nonces per ms per machine, meaning they will never catch the actual time, and the practical rate is only limited by hardware.
+
+  ### Sortable nonces (Snowflake IDs)
+
+  Sortable nonces have an accurate creation timestamp (as opposed to counter nonces). This makes them analogous to [Snowflake IDs](https://en.wikipedia.org/wiki/Snowflake_ID), apart from the slightly altered bit distribution of NoNoncense nonces (42 instead of 41 timestamp bits, 9 instead of 10 ID bits, no unused bit).
+
+  This has some implications. Again, 96/128-bit sortable nonces can be generated as quickly as your hardware can go. However, the 64-bit variant can be generated at 8M/s per machine and can't ever burst beyond that (the "saved-up-seconds" mechanic of counter nonces does not apply here). This should of course be plenty for most applications.
+
+  ### Encrypted nonces
+
+  By encrypting a nonce, the timestamp, machine ID and sequence information leak can be prevented. However, we wish to encrypt in a way that **maintains the uniqueness guarantee** of the input counter nonce. We can achieve this by using a block cipher where the cipher's block size matches the nonce's bit-length.
 
   > #### Cipher recommendations {: .info}
   >
-  > Use **AES** for 128-bit nonces. Use **Speck** for 64 and 96-bit nonces if possible. If sticking to OTP, use **Blowfish** on Linux and **3DES** elsewhere.
+  > Use **AES** for 128-bit nonces. Use **Speck** for 64 and 96-bit nonces if possible. If you with to stick to OTP / non-NSA ciphers, use **Blowfish** on Linux and **3DES** elsewhere.
+  >
+  > |  | Size | Cipher   | Performance | Security | Future proof | Notes                                                       |
+  > |:-| :--- | :------- | :---------- | :------- | :----------- | :---------------------------------------------------------- |
+  > |🥇| 128  | AES      | ⏩⏩⏩⏩    | ✅✅✅   | ✅           | The "gold standard".                                        |
+  > |  | 128  | Speck    | ⏩⏩⏩      | ✅✅     | ✅           | Recommended if no AES hardware acceleration, requires `SpeckEx`. |
+  > |🥇| 96   | Speck    | ⏩⏩⏩      | ✅✅     | ✅           | Fully encrypted 96-bit nonces, requires `SpeckEx`.      |
+  > |  | 96   | Blowfish | ⏩⏩        | ✅       | ❌           | Legacy, predictable tail, custom OpenSSL needed on Win/Mac. |
+  > |  | 96   | 3DES     | ⏩          | ✅       | 🟠           | Not *yet* legacy, predictable tail, slow.             |
+  > |🥇| 64   | Speck    | ⏩⏩⏩      | ✅✅     | ✅           | Requires `SpeckEx`.                                         |
+  > |  | 64   | Blowfish | ⏩⏩⏩      | ✅       | ❌           | Legacy, custom OpenSSL needed on Win/Mac.                   |
+  > |  | 64   | 3DES     | ⏩          | ✅       | 🟠           | Not *yet* legacy, slow.                               |
 
-  ### The Deep Dive
+  > #### Don't change the key or cipher {: .warning}
+  >
+  > You must never change the cipher or key used to generate encrypted nonces; doing so breaks the uniqueness guarantee. The only way to change the key or the cipher is by regenerating / invalidating all previously generated encrypted nonces.
 
-  Block ciphers essentially map each block of data to another block of the same size. A block cipher with 128-bit blocks would create 2^128 unique outputs for 2^128 unique inputs. Most modern ciphers use 128-bit blocks, notably "gold standard" AES, making it the perfect choice for 128-bit nonces.
+  > #### Don't use `encrypt/2` and `decrypt/2` for your own data {: .warning}
+  >
+  > The internal encryption primitives used by NoNoncense are designed solely to mask counters using raw block ciphers. Because they only operate on fixed-size blocks, lack padding or authentication, and use ciphers that are insecure for general-purpose applications, `encrypt/2` and `decrypt/2` are **not suitable for general-purpose encryption**.
 
-  The problem is that we can't use a 128-bit block cipher for 64/96-bit nonces, because we can't truncate the output. If we truncated a 128-bit output to a single byte, for example, we would end up with only 256 unique outputs; our 2^128 unique inputs would produce quite a few duplicates. This holds for less extreme truncation as well, so that's why we need ciphers with 64 and 96-bit block sizes, respectively. Unfortunately these are exceedingly rare because they are no longer secure for general-purpose usage.
+  ## Nonce encryption deep dive
+
+  Block ciphers essentially create a 1:1 (bijective) mapping of each plaintext block of data to an encrypted block. Most modern ciphers use 128-bit blocks, notably "gold standard" AES, making it the perfect choice for 128-bit nonces.
+
+  The problem is that we can't use a 128-bit block cipher for 64/96-bit nonces, because we can't truncate the output. If we encrypt a 64-bit nonce with AES and then truncate the output back to 64 bits, collisions are possible. This makes sense in extremis: if we truncated to a single byte, the 2^64 unique inputs would result in only 256 unique outputs. So that's why we need ciphers with 64 and 96-bit block sizes, respectively. Unfortunately these are exceedingly rare because they are no longer secure for general-purpose usage.
 
   One such cipher is Speck, designed by the NSA in 2013 for lightweight encryption. It has both 64 and 96-bit variants. The optional dependency `SpeckEx`, backed by (precompiled) Rust crate `speck_cipher`, enables support for it. It is very fast; in line with hardware-accelerated AES. Be aware that although the primitive block cipher mode used by `NoNoncense` matches official test vectors, `SpeckEx` has not been reviewed or audited.
 
-  If you only want to use OTP (OpenSSL) ciphers, we are limited to DES, 3DES, and BlowFish which all operate on 64-bit blocks. Both DES and Blowfish have been moved to the legacy ciphers list in OpenSSL 3.0, which means they are not available on all systems (notably Mac and Windows). Blowfish is the default because it offers the best performance by miles and is (still) available in Linux distributions, on which Elixir applications are likely to run. 3DES is a fallback option if that doesn't work for you and you don't want to use Speck.
+  If you only want to use OTP (OpenSSL) ciphers, we are limited to DES, 3DES, and BlowFish which all operate on 64-bit blocks. Both DES and Blowfish have been moved to the legacy ciphers list in OpenSSL 3.0, which means they are not available on all systems (notably Mac and Windows). Blowfish is the default because it offers the best performance by miles and is still available (for now) in Linux distributions, on which Elixir applications are likely to run. 3DES is a fallback option if that doesn't work for you and you don't want to use Speck. It is still part (for now) of the default ciphers in OpenSSL.
 
-  For 96-bit nonces there are no block ciphers whatsoever to choose from in OTP. All we can do is generate a 64-bit encrypted nonce and postfix 32 zero-bit. That way the nonce as a whole is unique, despite the predictable tail. You should determine for yourself if you can live with that. The only other option - and the main reason it exists in the first place - is using `SpeckEx`, because Speck has a 96-bit variant that can encrypt a full 96-bit counter nonce, without needing any padding.
+  For 96-bit nonces there are no block ciphers whatsoever to choose from in OTP. The best we can do is generate a 64-bit encrypted nonce and postfix 32 zero-bit. That way the nonce as a whole is unique, despite the predictable tail. You should determine for yourself if you can live with that. The only other option - and the main reason it exists in the first place - is using `SpeckEx`, because Speck has a 96-bit variant that can encrypt a full 96-bit counter nonce, without needing any padding.
+
+  ## Crypto suitability
+
+  NoNoncense encrypted nonces are **unique and unpredictable**, making them suitable for use as the input IV/nonce of a block or streaming cipher to encrypt your own data, like so:
+
+      iex> data = "Hello world"
+      iex> key = :crypto.strong_rand_bytes(32)
+      iex> iv = NoNoncense.encrypted_nonce(128)
+      iex> ciphertext = :crypto.crypto_one_time(:aes_256_cbc, key, iv, data, true)
+
+  Technically speaking, some block modes and ciphers only require IVs/nonces that are unique for a given key (but not necessarily unpredictable). Examples are CTR, GCM, CCM modes and streaming ciphers like ChaCha20. That means NoNoncense counter & sortable nonces **technically** meet the criteria, but because they leak information this is not a recommended practice.
   """
   alias NoNoncense.Crypto
   require Logger
@@ -269,7 +289,7 @@ defmodule NoNoncense do
   The `base_type` argument can be used to specify if a `:counter` or `:sortable` nonce
   should be used as the plaintext nonce (default `:counter`).
 
-  For more info, see [nonce encryption](#module-nonce-encryption).
+  For more info, see [encrypted nonces](#module-encrypted-nonces).
 
   ## Examples
 
@@ -306,11 +326,11 @@ defmodule NoNoncense do
   end
 
   @doc """
-  Encrypt a nonce while preserving its uniqueness guarantee.
+  Encrypt a nonce while preserving its uniqueness guarantee. Only use this function to encrypt NoNoncense nonces.
 
-  Under the same key and algorithm, this results in a one-to-one mapping of plaintext and ciphertext nonces.
+  Under the same key and cipher, this results in a one-to-one mapping of plaintext and ciphertext nonces.
 
-  The same caveats described for `encrypted_nonce/3` also apply to `encrypt/2` and `decrypt/2`. For more info, see [nonce encryption](#module-nonce-encryption).
+  The same caveats described for `encrypted_nonce/3` also apply to `encrypt/2` and `decrypt/2`. For more info, see [encrypted nonces](#module-encrypted-nonces).
 
       iex> NoNoncense.init(machine_id: 1, base_key: :crypto.strong_rand_bytes(32))
       :ok
@@ -321,7 +341,7 @@ defmodule NoNoncense do
   def encrypt(name \\ __MODULE__, nonce), do: :persistent_term.get(name) |> crypt(nonce, true)
 
   @doc """
-  Decrypt a nonce. See `encrypt/2`.
+  Decrypt a nonce. Only use this function to decrypt NoNoncense nonces. See `encrypt/2`.
   """
   @spec decrypt(atom, nonce()) :: nonce()
   def decrypt(name \\ __MODULE__, nonce), do: :persistent_term.get(name) |> crypt(nonce, false)

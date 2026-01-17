@@ -4,7 +4,7 @@ Generate locally unique nonces (number-only-used-once) in distributed Elixir.
 
 Nonces are unique values that are generated once and never repeated within your system. They have many practical uses including:
 
-- **ID Generation**: Create unique identifiers for database records, API requests, or any other resource in distributed systems
+- **ID Generation**: Create unique identifiers for database records, API requests, or any other resource in distributed systems. If this is your use case, have a look at [Once](https://github.com/juulSme/Once).
 - **Cryptographic Operations**: Serve as initialization vectors (IVs) for encryption algorithms, ensuring security in block cipher modes
 - **Deduplication**: Identify and prevent duplicate operations or messages in distributed systems
 
@@ -48,7 +48,7 @@ defmodule MyApp.Application do
     # grab your node_list from your application environment
     machine_id = NoNoncense.MachineId.id!(node_list: [:"myapp@127.0.0.1"])
     # base_key is required for encrypted nonces
-    :ok = NoNoncense.init(machine_id: machine_id, base_key: :crypto.strong_rand_bytes(32))
+    :ok = NoNoncense.init(machine_id: machine_id, base_key: System.get_env("BASE_KEY"))
 
     children =
       [
@@ -87,60 +87,48 @@ iex> <<_::128>> = NoNoncense.encrypted_nonce(128)
 ```
 On Debian Bookworm, AMD 9700X (8C 16T), 32GB, 990 Pro.
 
-nonce(128)                       4 tasks    67_479_380 ops/s
-nonce(128)                      16 tasks    66_651_927 ops/s
-nonce(96)                       16 tasks    65_672_432 ops/s
-nonce(64)                       16 tasks    65_424_996 ops/s
 nonce(128)                       1 task     65_238_805 ops/s
+nonce(96)                        1 task     50_140_765 ops/s
+nonce(64)                        1 task     24_389_379 ops/s
+sortable_nonce(128)              1 task     21_627_212 ops/s
+sortable_nonce(96)               1 task     20_838_522 ops/s
+encrypted_nonce(128) AES         1 task      8_918_276 ops/s
+sortable_nonce(64)               1 task      8_191_866 ops/s <- throttled
+encrypted_nonce(96) Speck        1 task      7_117_386 ops/s
+encrypted_nonce(64) Speck        1 task      6_859_774 ops/s
+encrypted_nonce(64) Blowfish     1 task      5_714_196 ops/s
+encrypted_nonce(96) Blowfish     1 task      4_603_991 ops/s
+strong_rand_bytes(16)            1 task      2_830_500 ops/s
+encrypted_nonce(64) 3DES         1 task      1_194_550 ops/s
+encrypted_nonce(96) 3DES         1 task      1_130_135 ops/s
+
+nonce(128)                       4 tasks    67_479_380 ops/s
 nonce(96)                        4 tasks    64_420_798 ops/s
 sortable_nonce(128)              4 tasks    60_862_312 ops/s
 nonce(64)                        4 tasks    60_386_514 ops/s
 sortable_nonce(96)               4 tasks    60_149_950 ops/s
-encrypted_nonce(128) AES        16 tasks    57_043_233 ops/s
-sortable_nonce(96)              16 tasks    55_579_818 ops/s
-sortable_nonce(128)             16 tasks    54_993_955 ops/s
-nonce(96)                        1 task     50_140_765 ops/s
-encrypted_nonce(64) Blowfish    16 tasks    45_025_885 ops/s
-encrypted_nonce(96) Speck       16 tasks    37_038_782 ops/s
-encrypted_nonce(96) Blowfish    16 tasks    34_539_194 ops/s
-encrypted_nonce(64) Speck       16 tasks    28_533_885 ops/s
 encrypted_nonce(128) AES         4 tasks    28_425_854 ops/s
-nonce(64)                        1 task     24_389_379 ops/s
-sortable_nonce(128)              1 task     21_627_212 ops/s
 encrypted_nonce(96) Speck        4 tasks    20_922_439 ops/s
-sortable_nonce(96)               1 task     20_838_522 ops/s
 encrypted_nonce(64) Speck        4 tasks    19_996_064 ops/s
 encrypted_nonce(64) Blowfish     4 tasks    19_426_322 ops/s
 encrypted_nonce(96) Blowfish     4 tasks    14_555_706 ops/s
-encrypted_nonce(64) 3DES        16 tasks    10_016_360 ops/s
-encrypted_nonce(96) 3DES        16 tasks     9_535_425 ops/s
-encrypted_nonce(128) AES         1 task      8_918_276 ops/s
 sortable_nonce(64)               4 tasks     8_192_138 ops/s <- throttled
-sortable_nonce(64)               1 task      8_191_866 ops/s <- throttled
-sortable_nonce(64)              16 tasks     7_973_708 ops/s <- throttled
-strong_rand_bytes(8)             4 tasks     7_452_613 ops/s
 strong_rand_bytes(16)            4 tasks     7_408_921 ops/s
-strong_rand_bytes(12)            4 tasks     7_396_600 ops/s
-encrypted_nonce(96) Speck        1 task      7_117_386 ops/s
-encrypted_nonce(64) Speck        1 task      6_859_774 ops/s
-encrypted_nonce(64) Blowfish     1 task      5_714_196 ops/s
-strong_rand_bytes(12)           16 tasks     4_776_713 ops/s
-strong_rand_bytes(8)            16 tasks     4_770_078 ops/s
-strong_rand_bytes(16)           16 tasks     4_762_500 ops/s
-encrypted_nonce(96) Blowfish     1 task      4_603_991 ops/s
 encrypted_nonce(64) 3DES         4 tasks     4_263_336 ops/s
 encrypted_nonce(96) 3DES         4 tasks     4_058_711 ops/s
-strong_rand_bytes(16)            1 task      2_830_500 ops/s
-strong_rand_bytes(8)             1 task      2_780_367 ops/s
-strong_rand_bytes(12)            1 task      2_745_915 ops/s
-encrypted_nonce(64) 3DES         1 task      1_194_550 ops/s
-encrypted_nonce(96) 3DES         1 task      1_130_135 ops/s
+
+nonce(128)                      16 tasks    66_651_927 ops/s
+encrypted_nonce(128) AES        16 tasks    57_043_233 ops/s
+sortable_nonce(96)              16 tasks    55_579_818 ops/s
+encrypted_nonce(64) Blowfish    16 tasks    45_025_885 ops/s
+encrypted_nonce(64) Speck       16 tasks    28_533_885 ops/s
+encrypted_nonce(64) 3DES        16 tasks    10_016_360 ops/s
 ```
 
 Some things of note:
 
 - NoNoncense nonces generate much faster than random binaries (and guarantee uniqueness).
-- The plain (counter) nonce generation rate is extremely high, even with a single thread. Multithreading improves performance mainly for 64-bit nonces.
-- Increasing the thread count starts to reduce plaintext nonce performance at some point (it's better to scale the number of nodes). Generation rates seem to hit a bottleneck of some kind, probably to do with `:atomics` contention. 4 tasks seem to be optimal with plaintext nonces on this platform.
-- Nonce encryption exacts a performance penalty, but it is manageable and scales well with cores. AES performs exceedingly well and there's really no reason to use anything else for 128-bit nonces except on platforms without hardware acceleration. For 64/96-bit nonces, Blowfish is a good default that is available in OTP. For 96-bit nonces, Speck offers best security and performance. See the [NoNoncense](https://hexdocs.pm/no_noncense/NoNoncense.html#module-nonce-encryption) docs for more info.
-- 3DES performs atrociously in comparison
+- The plain (counter) nonce generation rate is extremely high, even with a single thread. Multithreading improves performance mainly for 64-bit nonces and encrypted nonces.
+- Plaintext nonce generation rates don't scale beyond 4 cores, increasing the node count would be better.
+- Nonce encryption exacts a performance penalty, but it is manageable and scales well with cores.
+- 3DES performs atrociously compared to other cipher options.
