@@ -8,7 +8,7 @@ defmodule NoNoncense do
   - **Cryptographic Operations**: Serve as initialization vectors (IVs) for encryption algorithms, ensuring security in block cipher modes
   - **Deduplication**: Identify and prevent duplicate operations or messages in distributed systems
 
-  Locally unique means that the nonces are unique within your application/database/domain, as opposed to globally unique nonces that are unique across applications/databases/domains, like UUIDs.
+  Locally unique means that the nonces are unique within your application/database/domain, as opposed to globally unique nonces (like UUIDs) which are unique across *all* applications and domains.
 
   > #### Read the migration guide {: .warning}
   >
@@ -84,9 +84,9 @@ defmodule NoNoncense do
 
   ### Counter nonces
 
-  Counter nonces are basically a counter that is initialized with the machine (node) start time. An overflow of a nonce's counter bits will trigger a timestamp increase by 1ms, implying that the timestamp effectively functions as an extended counter. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the timestamp catches up to the actual time.
+  Counter nonces are essentially a counter that is initialized with the machine (node) start time. An overflow of a nonce's counter bits will trigger a timestamp increase by 1ms, meaning that the timestamp effectively functions as the high-order bits of the counter. Because the timestamp can't exceed the actual time (that would break the uniqueness guarantee), new nonce generation throttles if the timestamp catches up to the actual time.
 
-  That means that the maximum *sustained* rate is 8M/s per machine for 64-bit nonces (which have 13 counter bits). In practice it is unlikely that nonces are generated at such an extreme sustained rate, and the timestamp will lag behind the actual time. This creates "saved up seconds" that can be used to *burst* to even higher rates. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M nonces as quickly as hardware will allow. Benchmarking shows rates in the tens of millions per second are attainable this way.
+  That means that the maximum *sustained* rate is 8M/s per machine for 64-bit nonces (which have 13 counter bits). In practice, it is unlikely that nonces are generated at such an extreme sustained rate, and the timestamp will lag behind the actual time. This creates "saved up seconds" that can be used to *burst* to even higher rates. For example, if the first nonce is generated 10 seconds after initialization, 10K milliseconds have been "saved up" to generate 80M nonces as quickly as hardware will allow. Benchmarking shows rates in the tens of millions per second are attainable this way.
 
   96/128 bits counter nonces have such large counters that they can be generated at a practically unlimited sustained rate of >= 2^45 nonces per ms per machine, meaning they will never catch the actual time, and the practical rate is only limited by hardware.
 
@@ -102,7 +102,7 @@ defmodule NoNoncense do
 
   > #### Cipher recommendations {: .info}
   >
-  > Use **AES** for 128-bit nonces. Use **Speck** for 64 and 96-bit nonces if possible. If you with to stick to OTP / non-NSA ciphers, use **Blowfish** on Linux and **3DES** elsewhere.
+  > Use **AES** for 128-bit nonces. Use **Speck** for 64 and 96-bit nonces if possible. If you wish to stick to OTP / non-NSA ciphers, use **Blowfish** on Linux and **3DES** elsewhere.
   >
   > |  | Size | Cipher   | Performance | Security | Future proof | Notes                                                       |
   > |:-| :--- | :------- | :---------- | :------- | :----------- | :---------------------------------------------------------- |
@@ -133,7 +133,7 @@ defmodule NoNoncense do
 
   If you only want to use OTP (OpenSSL) ciphers, we are limited to DES, 3DES, and BlowFish which all operate on 64-bit blocks. Both DES and Blowfish have been moved to the legacy ciphers list in OpenSSL 3.0, which means they are not available on all systems (notably Mac and Windows). Blowfish is the default because it offers the best performance by miles and is still available (for now) in Linux distributions, on which Elixir applications are likely to run. 3DES is a fallback option if that doesn't work for you and you don't want to use Speck. It is still part (for now) of the default ciphers in OpenSSL.
 
-  For 96-bit nonces there are no block ciphers whatsoever to choose from in OTP. The best we can do is generate a 64-bit encrypted nonce and postfix 32 zero-bit. That way the nonce as a whole is unique, despite the predictable tail. You should determine for yourself if you can live with that. The only other option - and the main reason it exists in the first place - is using `SpeckEx`, because Speck has a 96-bit variant that can encrypt a full 96-bit counter nonce, without needing any padding.
+  For 96-bit nonces there are no block ciphers whatsoever to choose from in OTP. The best we can do is generate a 64-bit encrypted nonce and append 32 zero bits. That way the nonce as a whole is unique, despite the predictable tail. You should determine for yourself if you can live with that. The only other option - and the main reason it exists in the first place - is using `SpeckEx`, because Speck has a 96-bit variant that can encrypt a full 96-bit counter nonce, without needing any padding.
 
   ## Crypto suitability
 
@@ -187,6 +187,8 @@ defmodule NoNoncense do
   @doc """
   Initialize a nonce factory. Multiple instances with different names, epochs and even machine IDs are supported.
 
+  Raises on invalid configuration.
+
   ## Options
 
   #{@init_opt_docs}
@@ -206,8 +208,9 @@ defmodule NoNoncense do
     machine_id = Keyword.fetch!(opts, :machine_id)
 
     # check machine ID
-    if machine_id < 0 or machine_id > @machine_id_limit,
-      do: raise(ArgumentError, "machine ID out of range 0-#{@machine_id_limit}")
+    if machine_id < 0 or machine_id > @machine_id_limit do
+      raise ArgumentError, "machine ID out of range 0-#{@machine_id_limit}"
+    end
 
     # the offset of the monotonic clock from the epoch
     time_offset = System.time_offset(:millisecond) - epoch
@@ -218,8 +221,9 @@ defmodule NoNoncense do
     if init_at >= timestamp_overflow, do: raise(RuntimeError, "timestamp overflow")
     days_until_overflow = div(timestamp_overflow - init_at, @one_day_ms)
 
-    if days_until_overflow <= 365,
-      do: Logger.warning("timestamp overflow in #{days_until_overflow} days")
+    if days_until_overflow <= 365 do
+      Logger.warning("timestamp overflow in #{days_until_overflow} days")
+    end
 
     # initialize nonce counters
     counters_ref = :atomics.new(2, signed: false)
