@@ -148,10 +148,9 @@ defmodule NoNoncense do
   """
   alias NoNoncense.Crypto
   require Logger
+  import __MODULE__.State
 
   use __MODULE__.Constants
-
-  @one_day_ms 24 * 60 * 60 * 1000
 
   @type nonce_size :: 64 | 96 | 128
   @type nonce :: <<_::64>> | <<_::96>> | <<_::128>>
@@ -212,17 +211,17 @@ defmodule NoNoncense do
       raise ArgumentError, "machine ID out of range 0-#{@machine_id_limit}"
     end
 
-    # the offset of the monotonic clock from the epoch
-    time_offset = System.time_offset(:millisecond) - epoch
-    init_at = time_from_offset(time_offset)
+    # the offset of the monotonic clock from the wall clock epoch
+    mono_epoch_offset = System.time_offset(:millisecond) - epoch
+    init_at = epoch_time(mono_epoch_offset)
 
     # verify timestamp does not overflow
-    timestamp_overflow = Integer.pow(2, @ts_bits)
-    if init_at >= timestamp_overflow, do: raise(RuntimeError, "timestamp overflow")
-    days_until_overflow = div(timestamp_overflow - init_at, @one_day_ms)
+    days_to_overflow = div(@max_ts - init_at, _one_day_ms = 24 * 60 * 60 * 1000)
 
-    if days_until_overflow <= 365 do
-      Logger.warning("timestamp overflow in #{days_until_overflow} days")
+    cond do
+      init_at > @max_ts -> raise RuntimeError, "timestamp overflow"
+      days_to_overflow <= 365 -> Logger.warning("timestamp overflow in #{days_to_overflow} days")
+      true -> :ok
     end
 
     # initialize nonce counters
@@ -232,10 +231,26 @@ defmodule NoNoncense do
     :atomics.put(counters_ref, @sortable_counter_idx, init_at)
 
     # initialize encryption keys
-    ciphers = Crypto.init(opts)
+    {{c64, e64, d64}, {c96, e96, d96}, {c128, e128, d128}} = Crypto.init(opts)
 
     # build and store the state
-    state = {machine_id, init_at, time_offset, counters_ref, ciphers}
+    state =
+      state(
+        machine_id: machine_id,
+        init_at: init_at,
+        mono_epoch_offset: mono_epoch_offset,
+        counters_ref: counters_ref,
+        cipher64: c64,
+        cipher96: c96,
+        cipher128: c128,
+        enc64: e64,
+        enc96: e96,
+        enc128: e128,
+        dec64: d64,
+        dec96: d96,
+        dec128: d128
+      )
+
     :ok = :persistent_term.put(name, state)
   end
 
@@ -257,7 +272,14 @@ defmodule NoNoncense do
   def nonce(name \\ __MODULE__, bit_size)
   def nonce(name, bit_size), do: :persistent_term.get(name) |> gen_ctr_nonce(bit_size)
 
-  defp gen_ctr_nonce({machine_id, init_at, time_offset, counters_ref, _}, 64) do
+  defp gen_ctr_nonce(config, 64) do
+    state(
+      machine_id: machine_id,
+      init_at: init_at,
+      mono_epoch_offset: mono_epoch_offset,
+      counters_ref: counters_ref
+    ) = config
+
     # we can generate 10B nonce/s for 60 years straight before the unsigned 64-bit int overflows
     # so we don't need to worry about the atomic counter itself overflowing
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
@@ -271,18 +293,20 @@ defmodule NoNoncense do
 
     # with small counters in the nonce, we may need to wait for the monotonic clock to catch up to the nonce timestamp
     # with bigger nonces the counter is so big (>= 2^45) that it can't realistically overtake the timestamp
-    wait_until(timestamp, time_offset)
+    wait_until(timestamp, mono_epoch_offset)
 
     to_nonce(timestamp, machine_id, count, 64)
   end
 
-  defp gen_ctr_nonce({machine_id, init_at, _time_offset, counters_ref, _}, 96) do
+  defp gen_ctr_nonce(config, 96) do
+    state(machine_id: machine_id, init_at: init_at, counters_ref: counters_ref) = config
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
     <<cycle_n::@atomic_cycle_bits_96, count::@count_bits_96>> = <<atomic_count::64>>
     to_nonce(init_at + cycle_n, machine_id, count, 96)
   end
 
-  defp gen_ctr_nonce({machine_id, init_at, _time_offset, counters_ref, _}, 128) do
+  defp gen_ctr_nonce(config, 128) do
+    state(machine_id: machine_id, init_at: init_at, counters_ref: counters_ref) = config
     atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
     to_nonce(init_at, machine_id, atomic_count, 128)
   end
@@ -307,7 +331,7 @@ defmodule NoNoncense do
       <<162, 10, 94, 4, 91, 56, 147, 198, 46, 87, 142, 197, 128, 41, 79, 209>>
 
       # Using sortable nonces as base
-      iex> NoNoncense.encrypted_nonce(64, :sortable)
+      iex> NoNoncense.encrypted_nonce(NoNoncense, 64, :sortable)
       <<177, 123, 45, 67, 89, 12, 234, 56>>
   """
   @spec encrypted_nonce(atom(), nonce_size(), :counter | :sortable) :: nonce()
@@ -315,17 +339,17 @@ defmodule NoNoncense do
 
   def encrypted_nonce(name, bit_size, base_type) when bit_size in [64, 128] do
     config = :persistent_term.get(name)
-    cipher = get_cipher(config, bit_size)
-    gen_base_nonce(config, base_type, bit_size) |> Crypto.crypt(cipher, true)
+    gen_base_nonce(config, base_type, bit_size) |> crypt(config, true, bit_size)
   end
 
   def encrypted_nonce(name, 96, base_type) do
     config = :persistent_term.get(name)
-    {_, _, _, _, {_, cipher, _}} = config
+    state(cipher96: cipher, enc96: e96, dec96: d96) = config
 
-    case cipher do
-      {:speck, _} -> gen_base_nonce(config, base_type, 96) |> Crypto.crypt(cipher, true)
-      _ -> (gen_base_nonce(config, base_type, 64) |> Crypto.crypt(cipher, true)) <> @pad_64_to_96
+    if cipher == :speck do
+      gen_base_nonce(config, base_type, 96) |> Crypto.crypt(cipher, e96, d96, true)
+    else
+      (gen_base_nonce(config, base_type, 64) |> Crypto.crypt(cipher, e96, d96, true)) <> @zero32
     end
   end
 
@@ -342,13 +366,13 @@ defmodule NoNoncense do
       iex> ^plaintext = plaintext |> NoNoncense.encrypt() |> NoNoncense.decrypt()
   """
   @spec encrypt(atom, nonce()) :: nonce()
-  def encrypt(name \\ __MODULE__, nonce), do: :persistent_term.get(name) |> crypt(nonce, true)
+  def encrypt(name \\ __MODULE__, nonce), do: crypt(nonce, :persistent_term.get(name), true)
 
   @doc """
   Decrypt a nonce. Only use this function to decrypt NoNoncense nonces. See `encrypt/2`.
   """
   @spec decrypt(atom, nonce()) :: nonce()
-  def decrypt(name \\ __MODULE__, nonce), do: :persistent_term.get(name) |> crypt(nonce, false)
+  def decrypt(name \\ __MODULE__, nonce), do: crypt(nonce, :persistent_term.get(name), false)
 
   @doc """
   Generate a nonce that is sortable by generation time, like a Snowflake ID. The first 42 bits contain the timestamp.
@@ -368,13 +392,14 @@ defmodule NoNoncense do
   def sortable_nonce(name \\ __MODULE__, bit_size)
   def sortable_nonce(name, bit_size), do: :persistent_term.get(name) |> gen_srt_nonce(bit_size)
 
-  defp gen_srt_nonce(cfg = {machine_id, _, time_offset, counters_ref, _}, bit_size)
-       when bit_size in [64, 96, 128] do
+  defp gen_srt_nonce(cfg, bit_size) when bit_size in [64, 96, 128] do
+    state(machine_id: machine_id, mono_epoch_offset: mo_offset, counters_ref: counters_ref) = cfg
+
     ts_counter = :atomics.add_get(counters_ref, @sortable_counter_idx, 1)
     # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, we can assume no overflow
     <<current_ts::@ts_bits, new_count::@non_ts_bits_64>> = <<ts_counter::64>>
 
-    now = time_from_offset(time_offset)
+    now = epoch_time(mo_offset)
 
     # if timestamp has changed since last invocation...
     if now > current_ts do
@@ -407,9 +432,9 @@ defmodule NoNoncense do
   """
   @spec get_datetime(atom(), nonce()) :: DateTime.t()
   def get_datetime(name \\ __MODULE__, nonce) do
-    {_, _init_at, time_offset, _, _} = :persistent_term.get(name)
+    state(mono_epoch_offset: mono_epoch_offset) = :persistent_term.get(name)
     <<timestamp::@ts_bits, _::bits>> = nonce
-    epoch = System.time_offset(:millisecond) - time_offset
+    epoch = System.time_offset(:millisecond) - mono_epoch_offset
     timestamp = timestamp + epoch
     DateTime.from_unix!(timestamp, :millisecond)
   end
@@ -419,13 +444,15 @@ defmodule NoNoncense do
   ###########
 
   @compile {:inline, wait_until: 2}
-  defp wait_until(timestamp, time_offset) do
-    now = time_from_offset(time_offset)
-    if timestamp > now, do: :timer.sleep(timestamp - now)
+  defp wait_until(epoch_ts, mono_epoch_offset) do
+    epoch_now = epoch_time(mono_epoch_offset)
+    if epoch_ts > epoch_now, do: :timer.sleep(epoch_ts - epoch_now)
   end
 
-  @compile {:inline, time_from_offset: 1}
-  defp time_from_offset(time_offset), do: System.monotonic_time(:millisecond) + time_offset
+  @compile {:inline, epoch_time: 1}
+  # get millis since epoch
+  # by adding the offset of the monotonic clock from the epoch to the current monotonic time
+  defp epoch_time(mono_epoch_offset), do: System.monotonic_time(:millisecond) + mono_epoch_offset
 
   @compile {:inline, to_nonce: 4}
   defp to_nonce(timestamp, machine_id, count, _size = 64) do
@@ -440,20 +467,24 @@ defmodule NoNoncense do
     <<timestamp::@ts_bits, machine_id::@id_bits, 0::@padding_bits_128, count::64>>
   end
 
-  @compile {:inline, get_cipher: 2}
-  defp get_cipher({_, _, _, _, {cipher, _, _}}, 64), do: cipher
-  defp get_cipher({_, _, _, _, {_, cipher, _}}, 96), do: cipher
-  defp get_cipher({_, _, _, _, {_, _, cipher}}, 128), do: cipher
-
   @compile {:inline, gen_base_nonce: 3}
   defp gen_base_nonce(config, :counter, bit_size), do: gen_ctr_nonce(config, bit_size)
   defp gen_base_nonce(config, :sortable, bit_size), do: gen_srt_nonce(config, bit_size)
 
-  defp crypt(config, nonce, encrypt?), do: bit_size(nonce) |> crypt(config, nonce, encrypt?)
+  @compile {:inline, crypt: 3}
+  defp crypt(nonce, config, encrypt?), do: crypt(nonce, config, encrypt?, bit_size(nonce))
 
-  @compile {:inline, crypt: 4}
-  defp crypt(bit_size, config, nonce, encrypt?) when bit_size in [64, 96, 128] do
-    cipher = get_cipher(config, bit_size)
-    Crypto.crypt(nonce, cipher, encrypt?)
+  defp crypt(nonce, config, encrypt?, bit_size)
+
+  defp crypt(nonce, state(cipher64: c64, enc64: enc64, dec64: dec64), encrypt?, 64) do
+    Crypto.crypt(nonce, c64, enc64, dec64, encrypt?)
+  end
+
+  defp crypt(nonce, state(cipher96: c96, enc96: enc96, dec96: dec96), encrypt?, 96) do
+    Crypto.crypt(nonce, c96, enc96, dec96, encrypt?)
+  end
+
+  defp crypt(nonce, state(cipher128: c128, enc128: enc128, dec128: dec128), encrypt?, 128) do
+    Crypto.crypt(nonce, c128, enc128, dec128, encrypt?)
   end
 end

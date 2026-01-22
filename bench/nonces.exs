@@ -1,3 +1,5 @@
+import NoNoncense.State
+
 # with a long-ago epoch, we force a worst-case scenario with bigger-number arithmetic
 NoNoncense.init(
   machine_id: 0,
@@ -24,9 +26,10 @@ NoNoncense.init(
 )
 
 # artifially set back the clock, so that 64-bit nonces don't hit their time-based rate limit
-{a, init_at, c, d, e} = :persistent_term.get(NoNoncense)
+config = :persistent_term.get(NoNoncense)
+state(init_at: init_at) = config
 ten_days = 10 * 24 * 60 * 60 * 1000
-:persistent_term.put(NoNoncense, {a, init_at - ten_days, c, d, e})
+:persistent_term.put(NoNoncense, state(config, init_at: init_at - ten_days))
 
 Process.sleep(1000)
 

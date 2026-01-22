@@ -25,11 +25,15 @@ defmodule NoNoncense.Constants do
       @atomic_cycle_bits_96 64 - @count_bits_96
       # no of padding bits in a 128-bit nonce
       @padding_bits_128 128 - @ts_bits - @id_bits - 64
+      # maximum timestamp value
+      @max_ts Integer.pow(2, 42)
 
+      # atomics indexes
       @counter_idx 1
       @sortable_counter_idx 2
 
-      @pad_64_to_96 <<0::32>>
+      # padding to extend a 64-bits encrypted nonce to 96 bits
+      @zero32 <<0::32>>
     end
   end
 end

@@ -106,20 +106,20 @@ defmodule NoNoncense.Crypto do
      :crypto.crypto_init(:blowfish_ecb, key, false)}
   end
 
-  defp maybe_init_cipher({:des3, _} = alg_key_pair), do: alg_key_pair
+  defp maybe_init_cipher({:des3, key}), do: {:des3, key, nil}
 
   if Code.ensure_loaded?(SpeckEx) do
     defp maybe_init_cipher({:speck, <<_::128>> = key}),
-      do: {:speck, SpeckEx.Block.init(key, :speck64_128)}
+      do: {:speck, SpeckEx.Block.init(key, :speck64_128), nil}
 
     defp maybe_init_cipher({:speck, <<_::144>> = key}),
-      do: {:speck, SpeckEx.Block.init(key, :speck96_144)}
+      do: {:speck, SpeckEx.Block.init(key, :speck96_144), nil}
 
     defp maybe_init_cipher({:speck, <<_::256>> = key}),
-      do: {:speck, SpeckEx.Block.init(key, :speck128_256)}
+      do: {:speck, SpeckEx.Block.init(key, :speck128_256), nil}
   end
 
-  defp maybe_init_cipher(_), do: nil
+  defp maybe_init_cipher(_), do: {nil, nil, nil}
 
   defp gen_key(base, salt, length) do
     :crypto.pbkdf2_hmac(:sha256, base, salt, 1000, length)
@@ -138,42 +138,42 @@ defmodule NoNoncense.Crypto do
     end
   end
 
-  def crypt(nonce, cipher, encrypt?)
-  def crypt(_, nil, _), do: raise(RuntimeError, "no key set at NoNoncense initialization")
+  def crypt(nonce, cipher, enc_key_or_ref, dec_key_or_ref, encrypt?)
+  def crypt(_, nil, _, _, _), do: raise(RuntimeError, "no key set at NoNoncense initialization")
 
   # 64-bit Speck
-  def crypt(<<n::binary-8>>, {:speck, c}, true), do: speck_enc(n, c, :speck64_128)
-  def crypt(<<n::binary-8>>, {:speck, c}, false), do: speck_dec(n, c, :speck64_128)
+  def crypt(<<n::binary-8>>, :speck, ref, _, true), do: speck_enc(n, ref, :speck64_128)
+  def crypt(<<n::binary-8>>, :speck, ref, _, false), do: speck_dec(n, ref, :speck64_128)
 
   # 64-bit Blowfish
-  def crypt(<<n::binary-8>>, {:blowfish, c, _}, true), do: :crypto.crypto_update(c, n)
-  def crypt(<<n::binary-8>>, {:blowfish, _, c}, false), do: :crypto.crypto_update(c, n)
+  def crypt(<<n::binary-8>>, :blowfish, e_ref, _, true), do: :crypto.crypto_update(e_ref, n)
+  def crypt(<<n::binary-8>>, :blowfish, _, d_ref, false), do: :crypto.crypto_update(d_ref, n)
 
   # 64-bit 3DES
-  def crypt(<<n::binary-8>>, {:des3, key}, encrypt?), do: des_crypt(n, key, encrypt?)
+  def crypt(<<n::binary-8>>, :des3, key, _, encrypt?), do: des_crypt(n, key, encrypt?)
 
   # 96-bit Speck
-  def crypt(<<n::binary-12>>, {:speck, c}, true), do: speck_enc(n, c, :speck96_144)
-  def crypt(<<n::binary-12>>, {:speck, c}, false), do: speck_dec(n, c, :speck96_144)
+  def crypt(<<n::binary-12>>, :speck, ref, _, true), do: speck_enc(n, ref, :speck96_144)
+  def crypt(<<n::binary-12>>, :speck, ref, _, false), do: speck_dec(n, ref, :speck96_144)
 
   # 96-bit Blowfish
-  def crypt(<<n::binary-8, @pad_64_to_96>>, {:blowfish, c, _}, true),
-    do: :crypto.crypto_update(c, n) <> @pad_64_to_96
+  def crypt(<<n::binary-8, @zero32>>, :blowfish, e_ref, _, true),
+    do: :crypto.crypto_update(e_ref, n) <> @zero32
 
-  def crypt(<<n::binary-8, @pad_64_to_96>>, {:blowfish, _, c}, false),
-    do: :crypto.crypto_update(c, n) <> @pad_64_to_96
+  def crypt(<<n::binary-8, @zero32>>, :blowfish, _, d_ref, false),
+    do: :crypto.crypto_update(d_ref, n) <> @zero32
 
   # 96-bit 3DES
-  def crypt(<<n::binary-8, @pad_64_to_96>>, {:des3, key}, encrypt?),
-    do: des_crypt(n, key, encrypt?) <> @pad_64_to_96
+  def crypt(<<n::binary-8, @zero32>>, :des3, key, _, encrypt?),
+    do: des_crypt(n, key, encrypt?) <> @zero32
 
   # 128-bit AES
-  def crypt(<<n::binary-16>>, {:aes, c, _}, true), do: :crypto.crypto_update(c, n)
-  def crypt(<<n::binary-16>>, {:aes, _, c}, false), do: :crypto.crypto_update(c, n)
+  def crypt(<<n::binary-16>>, :aes, e_ref, _, true), do: :crypto.crypto_update(e_ref, n)
+  def crypt(<<n::binary-16>>, :aes, _, d_ref, false), do: :crypto.crypto_update(d_ref, n)
 
   # 128-bit Speck
-  def crypt(<<n::binary-16>>, {:speck, c}, true), do: speck_enc(n, c, :speck128_256)
-  def crypt(<<n::binary-16>>, {:speck, c}, false), do: speck_dec(n, c, :speck128_256)
+  def crypt(<<n::binary-16>>, :speck, ref, _, true), do: speck_enc(n, ref, :speck128_256)
+  def crypt(<<n::binary-16>>, :speck, ref, _, false), do: speck_dec(n, ref, :speck128_256)
 
   @des_iv <<0::64>>
 

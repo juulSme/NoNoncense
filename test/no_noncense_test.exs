@@ -4,27 +4,13 @@ defmodule NoNoncenseTest do
   use NoNoncense.Constants
   import ExUnit.CaptureLog
   import SpeckEx.Block
+  import NoNoncense.State
 
   @name :test_nonce_factory
   @epoch System.system_time(:millisecond)
 
-  defp get_state(name) do
-    {machine_id, init_at, time_offset, counters_ref, {cipher64, cipher96, cipher128}} =
-      :persistent_term.get(name)
-
-    %{
-      machine_id: machine_id,
-      init_at: init_at,
-      time_offset: time_offset,
-      counters_ref: counters_ref,
-      cipher64: cipher64,
-      cipher96: cipher96,
-      cipher128: cipher128
-    }
-  end
-
   defp nonce_info(nonce, name) do
-    %{init_at: init_at, time_offset: time_offset} = get_state(name)
+    state(init_at: init_at, mono_epoch_offset: time_offset) = :persistent_term.get(name)
 
     size = bit_size(nonce)
     count_size = size - @ts_bits - @id_bits
@@ -102,7 +88,7 @@ defmodule NoNoncenseTest do
 
     test "works without crypto init" do
       NoNoncense.init(name: @name, machine_id: 1)
-      assert %{cipher64: nil, cipher96: nil, cipher128: nil} = get_state(@name)
+      assert state(cipher64: nil, cipher96: nil, cipher128: nil) = :persistent_term.get(@name)
     end
 
     test "raises on too small base key" do
@@ -115,8 +101,8 @@ defmodule NoNoncenseTest do
     test "defaults to OTP algorithms" do
       NoNoncense.init(name: @name, machine_id: 1, base_key: :crypto.strong_rand_bytes(32))
 
-      %{cipher64: {cipher64, _, _}, cipher96: {cipher96, _, _}, cipher128: {cipher128, _, _}} =
-        get_state(@name)
+      state(cipher64: cipher64, cipher96: cipher96, cipher128: cipher128) =
+        :persistent_term.get(@name)
 
       assert cipher64 == :blowfish
       assert cipher96 == :blowfish
@@ -133,8 +119,8 @@ defmodule NoNoncenseTest do
         cipher128: :speck
       )
 
-      assert %{cipher64: {:des3, _}, cipher96: {:speck, _}, cipher128: {:speck, _}} =
-               get_state(@name)
+      assert state(cipher64: :des3, cipher96: :speck, cipher128: :speck) =
+               :persistent_term.get(@name)
     end
 
     test "raises on unsupported alg" do
@@ -274,7 +260,7 @@ defmodule NoNoncenseTest do
     end
 
     test "count wraps and timestamp increases on cycle limit wrap" do
-      %{counters_ref: counter_ref} = get_state(@name)
+      state(counters_ref: counter_ref) = :persistent_term.get(@name)
       :atomics.put(counter_ref, 1, @max_count_64 - 2)
 
       nonce1 = NoNoncense.nonce(@name, 64)
@@ -293,8 +279,8 @@ defmodule NoNoncenseTest do
     end
 
     test "nonce's can't predate their timestamp" do
-      state = get_state(@name)
-      %{init_at: init_at, time_offset: time_offset, counters_ref: counter_ref} = state
+      state(init_at: init_at, mono_epoch_offset: time_offset, counters_ref: counter_ref) =
+        :persistent_term.get(@name)
 
       # jump to cycle #99, which should not generate nonces until 99ms have passed
       cycle_count = 99
@@ -352,7 +338,7 @@ defmodule NoNoncenseTest do
     end
 
     test "count wraps and timestamp increases on cycle limit wrap" do
-      %{counters_ref: counter_ref} = get_state(@name)
+      state(counters_ref: counter_ref) = :persistent_term.get(@name)
       cycle_size = Integer.pow(2, @count_bits_96)
       :atomics.put(counter_ref, 1, cycle_size - 2)
 
@@ -638,8 +624,7 @@ defmodule NoNoncenseTest do
     end
 
     test "nonces are actually speck-encrypted" do
-      %{cipher64: {_, init64}, cipher96: {_, init96}, cipher128: {_, init128}} =
-        get_state(@name)
+      state(enc64: init64, enc96: init96, enc128: init128) = :persistent_term.get(@name)
 
       <<b::51, c1::13>> = NoNoncense.nonce(@name, 64)
       enc_nonce_64 = NoNoncense.encrypted_nonce(@name, 64)
@@ -697,7 +682,7 @@ defmodule NoNoncenseTest do
     end
 
     test "are actually 3des/aes-encrypted", %{base_key: base_key} do
-      %{cipher64: {_, key64}, cipher96: {_, key96}} = get_state(@name)
+      state(enc64: key64, enc96: key96) = :persistent_term.get(@name)
       {_, key128} = Crypto.maybe_gen_key(nil, base_key, :aes, 128)
 
       <<b::51, c1::13>> = NoNoncense.nonce(@name, 64)
