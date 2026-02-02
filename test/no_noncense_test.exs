@@ -261,21 +261,17 @@ defmodule NoNoncenseTest do
 
     test "count wraps and timestamp increases on cycle limit wrap" do
       state(counters_ref: counter_ref) = :persistent_term.get(@name)
-      :atomics.put(counter_ref, 1, @max_count_64 - 2)
 
       nonce1 = NoNoncense.nonce(@name, 64)
-      nonce1_info = nonce_info(nonce1, @name)
+      assert %{count: 0, cycle: 0, timestamp: n1_ts} = nonce_info(nonce1, @name)
+
+      cycle_size = Integer.pow(2, @count_bits_64)
+      :atomics.add(counter_ref, @counter_idx, cycle_size - 1)
 
       nonce2 = NoNoncense.nonce(@name, 64)
-      nonce2_info = nonce_info(nonce2, @name)
 
-      assert nonce1_info.count == @max_count_64 - 1
-      assert nonce2_info.count == 0
-
-      assert nonce1_info.cycle == 0
-      assert nonce2_info.cycle == 1
-
-      assert nonce2_info.timestamp == nonce1_info.timestamp + 1
+      exp_ts = n1_ts + 1
+      assert %{count: 0, cycle: 1, timestamp: ^exp_ts} = nonce_info(nonce2, @name)
     end
 
     test "nonce's can't predate their timestamp" do
@@ -284,7 +280,7 @@ defmodule NoNoncenseTest do
 
       # jump to cycle #99, which should not generate nonces until 99ms have passed
       cycle_count = 99
-      :atomics.put(counter_ref, 1, @max_count_64 * cycle_count - 5)
+      :atomics.put(counter_ref, @counter_idx, @max_count_64 * cycle_count - 5)
       not_before = init_at + cycle_count
 
       1..10
@@ -339,22 +335,17 @@ defmodule NoNoncenseTest do
 
     test "count wraps and timestamp increases on cycle limit wrap" do
       state(counters_ref: counter_ref) = :persistent_term.get(@name)
-      cycle_size = Integer.pow(2, @count_bits_96)
-      :atomics.put(counter_ref, 1, cycle_size - 2)
 
       nonce1 = NoNoncense.nonce(@name, 96)
-      nonce1_info = nonce_info(nonce1, @name)
+      assert %{count: 0, cycle: 0, timestamp: n1_ts} = nonce_info(nonce1, @name)
+
+      cycle_size = Integer.pow(2, @count_bits_96)
+      :atomics.add(counter_ref, @counter_idx, cycle_size - 1)
 
       nonce2 = NoNoncense.nonce(@name, 96)
-      nonce2_info = nonce_info(nonce2, @name)
 
-      assert nonce1_info.count == cycle_size - 1
-      assert nonce2_info.count == 0
-
-      assert nonce1_info.cycle == 0
-      assert nonce2_info.cycle == 1
-
-      assert nonce2_info.timestamp == nonce1_info.timestamp + 1
+      exp_ts = n1_ts + 1
+      assert %{count: 0, cycle: 1, timestamp: ^exp_ts} = nonce_info(nonce2, @name)
     end
 
     test "creates unique nonces with concurrent requests" do

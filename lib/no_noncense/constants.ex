@@ -26,7 +26,7 @@ defmodule NoNoncense.Constants do
       # no of padding bits in a 128-bit nonce
       @padding_bits_128 128 - @ts_bits - @id_bits - 64
       # maximum timestamp value
-      @max_ts Integer.pow(2, 42)
+      @max_ts Integer.pow(2, @ts_bits)
 
       # atomics indexes
       @counter_idx 1
