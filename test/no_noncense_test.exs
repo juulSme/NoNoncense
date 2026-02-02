@@ -204,7 +204,7 @@ defmodule NoNoncenseTest do
                  <<0::32>>
 
       assert enc_nonce_128 ==
-               :crypto.crypto_one_time(:aes_256_ecb, key128, <<b::51, 0::64, c1 + 3::13>>, true)
+               :crypto.crypto_one_time(:aes_256_ecb, key128, <<b::51, 0::64, c1::13>>, true)
     end
 
     @tag :blowfish
@@ -266,7 +266,7 @@ defmodule NoNoncenseTest do
       assert %{count: 0, cycle: 0, timestamp: n1_ts} = nonce_info(nonce1, @name)
 
       cycle_size = Integer.pow(2, @count_bits_64)
-      :atomics.add(counter_ref, @counter_idx, cycle_size - 1)
+      :atomics.add(counter_ref, @counter64_idx, cycle_size - 1)
 
       nonce2 = NoNoncense.nonce(@name, 64)
 
@@ -280,7 +280,7 @@ defmodule NoNoncenseTest do
 
       # jump to cycle #99, which should not generate nonces until 99ms have passed
       cycle_count = 99
-      :atomics.put(counter_ref, @counter_idx, @max_count_64 * cycle_count - 5)
+      :atomics.put(counter_ref, @counter64_idx, @max_count_64 * cycle_count - 5)
       not_before = init_at + cycle_count
 
       1..10
@@ -340,7 +340,7 @@ defmodule NoNoncenseTest do
       assert %{count: 0, cycle: 0, timestamp: n1_ts} = nonce_info(nonce1, @name)
 
       cycle_size = Integer.pow(2, @count_bits_96)
-      :atomics.add(counter_ref, @counter_idx, cycle_size - 1)
+      :atomics.add(counter_ref, @counter96_128_idx, cycle_size - 1)
 
       nonce2 = NoNoncense.nonce(@name, 96)
 
@@ -623,8 +623,8 @@ defmodule NoNoncenseTest do
       enc_nonce_128 = NoNoncense.encrypted_nonce(@name, 128)
 
       assert enc_nonce_64 == encrypt(<<b::51, c1 + 1::13>>, init64, :speck64_128)
-      assert enc_nonce_96 == encrypt(<<b::51, 0::32, c1 + 2::13>>, init96, :speck96_144)
-      assert enc_nonce_128 == encrypt(<<b::51, 0::64, c1 + 3::13>>, init128, :speck128_256)
+      assert enc_nonce_96 == encrypt(<<b::51, 0::32, c1::13>>, init96, :speck96_144)
+      assert enc_nonce_128 == encrypt(<<b::51, 0::64, c1 + 1::13>>, init128, :speck128_256)
     end
   end
 
@@ -701,7 +701,7 @@ defmodule NoNoncenseTest do
                  <<0::32>>
 
       assert enc_nonce_128 ==
-               :crypto.crypto_one_time(:aes_256_ecb, key128, <<b::51, 0::64, c1 + 3::13>>, true)
+               :crypto.crypto_one_time(:aes_256_ecb, key128, <<b::51, 0::64, c1::13>>, true)
     end
   end
 
