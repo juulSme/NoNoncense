@@ -225,9 +225,13 @@ defmodule NoNoncense do
     end
 
     # initialize nonce counters
-    counters_ref = :atomics.new(2, signed: false)
+    counters_ref = :atomics.new(3, signed: false)
+
+    # the init timestamp doubles as the higher-order bits of the counter
+    <<initial_64::64>> = <<init_at::@non_count_bits_64, 0::@count_bits_64>>
     # the counter will overflow to 0 on the first nonce generation
-    :atomics.put(counters_ref, @counter_idx, Integer.pow(2, 64) - 1)
+    :atomics.put(counters_ref, @counter64_idx, initial_64 - 1)
+    :atomics.put(counters_ref, @counter96_128_idx, Integer.pow(2, 64) - 1)
     :atomics.put(counters_ref, @sortable_counter_idx, init_at)
 
     # initialize encryption keys
@@ -273,41 +277,29 @@ defmodule NoNoncense do
   def nonce(name, bit_size), do: :persistent_term.get(name) |> gen_ctr_nonce(bit_size)
 
   defp gen_ctr_nonce(config, 64) do
-    state(
-      machine_id: machine_id,
-      init_at: init_at,
-      mono_epoch_offset: mono_epoch_offset,
-      counters_ref: counters_ref
-    ) = config
+    state(machine_id: machine_id, mono_epoch_offset: mo_offset, counters_ref: counters) = config
+    atomic_count = :atomics.add_get(counters, @counter64_idx, 1)
 
-    # we can generate 10B nonce/s for 60 years straight before the unsigned 64-bit int overflows
-    # so we don't need to worry about the atomic counter itself overflowing
-    atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
+    # the atomic count is initialized with the timestamp and 13 counter bits
+    <<timestamp::@non_count_bits_64, count::@count_bits_64>> = <<atomic_count::64>>
 
-    # but we do need to worry about the nonce's counter - only 13 bits for a 64-bit nonce - overflowing
-    # we divide the 64-bit atomic counter space to derive the nonce's cycle count and counter
-    <<cycle_n::@atomic_cycle_bits_64, count::@count_bits_64>> = <<atomic_count::64>>
-
-    # the nonce timestamp is actually an init timestamp + cycle counter
-    timestamp = init_at + cycle_n
-
-    # with small counters in the nonce, we may need to wait for the monotonic clock to catch up to the nonce timestamp
-    # with bigger nonces the counter is so big (>= 2^45) that it can't realistically overtake the timestamp
-    wait_until(timestamp, mono_epoch_offset)
+    # we may need to wait for the monotonic clock to catch up to the nonce timestamp
+    wait_until(timestamp, mo_offset)
 
     to_nonce(timestamp, machine_id, count, 64)
   end
 
   defp gen_ctr_nonce(config, 96) do
     state(machine_id: machine_id, init_at: init_at, counters_ref: counters_ref) = config
-    atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
+    atomic_count = :atomics.add_get(counters_ref, @counter96_128_idx, 1)
+    # With 2^45 counter bits, the counter can't realistically overflow
     <<cycle_n::@atomic_cycle_bits_96, count::@count_bits_96>> = <<atomic_count::64>>
     to_nonce(init_at + cycle_n, machine_id, count, 96)
   end
 
   defp gen_ctr_nonce(config, 128) do
     state(machine_id: machine_id, init_at: init_at, counters_ref: counters_ref) = config
-    atomic_count = :atomics.add_get(counters_ref, @counter_idx, 1)
+    atomic_count = :atomics.add_get(counters_ref, @counter96_128_idx, 1)
     to_nonce(init_at, machine_id, atomic_count, 128)
   end
 
