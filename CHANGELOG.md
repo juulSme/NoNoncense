@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0]
+
+### Changed
+
+- **Internal refactor**: State is now stored in a typed record (`NoNoncense.State`) for improved maintainability.
+- **Performance**: 64-bit counter is initialized with the startup timestamp, eliminating a redundant addition on each `nonce/2` call.
+- **Performance**: Minor optimization in the `nonce/2` hot path.
+
+### Other
+
+- Updated dependencies.
+
+## [1.1.3]
+
+- Fixed documentation typos.
+- Added link to Speck Rust crate docs.
+
+## [1.1.2]
+
+- Improved documentation.
+- Extended CI to run on Windows and macOS.
+
+## [1.1.1]
+
+- Updated documentation to reflect that legacy ciphers (Blowfish, 3DES) are unavailable on Windows and macOS.
+
 ## [1.1.0]
 
 - Add `encrypt/2`, `decrypt/2` and `encrypted_nonce/3`.
