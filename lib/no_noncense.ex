@@ -286,7 +286,7 @@ defmodule NoNoncense do
     # we may need to wait for the monotonic clock to catch up to the nonce timestamp
     wait_until(timestamp, mo_offset)
 
-    to_nonce(timestamp, machine_id, count, 64)
+    to_nonce_64(timestamp, machine_id, count)
   end
 
   defp gen_ctr_nonce(config, 96) do
@@ -294,13 +294,13 @@ defmodule NoNoncense do
     atomic_count = :atomics.add_get(counters_ref, @counter96_128_idx, 1)
     # With 2^45 counter bits, the counter can't realistically overflow
     <<cycle_n::@atomic_cycle_bits_96, count::@count_bits_96>> = <<atomic_count::64>>
-    to_nonce(init_at + cycle_n, machine_id, count, 96)
+    to_nonce_96(init_at + cycle_n, machine_id, count)
   end
 
   defp gen_ctr_nonce(config, 128) do
     state(machine_id: machine_id, init_at: init_at, counters_ref: counters_ref) = config
     atomic_count = :atomics.add_get(counters_ref, @counter96_128_idx, 1)
-    to_nonce(init_at, machine_id, atomic_count, 128)
+    to_nonce_128(init_at, machine_id, atomic_count)
   end
 
   @doc """
@@ -446,18 +446,25 @@ defmodule NoNoncense do
   # by adding the offset of the monotonic clock from the epoch to the current monotonic time
   defp epoch_time(mono_epoch_offset), do: System.monotonic_time(:millisecond) + mono_epoch_offset
 
-  @compile {:inline, to_nonce: 4}
-  defp to_nonce(timestamp, machine_id, count, _size = 64) do
+  @compile {:inline, to_nonce_64: 3}
+  defp to_nonce_64(timestamp, machine_id, count) do
     <<timestamp::@ts_bits, machine_id::@id_bits, count::@count_bits_64>>
   end
 
-  defp to_nonce(timestamp, machine_id, count, 96) do
+  @compile {:inline, to_nonce_96: 3}
+  defp to_nonce_96(timestamp, machine_id, count) do
     <<timestamp::@ts_bits, machine_id::@id_bits, count::@count_bits_96>>
   end
 
-  defp to_nonce(timestamp, machine_id, count, 128) do
+  @compile {:inline, to_nonce_128: 3}
+  defp to_nonce_128(timestamp, machine_id, count) do
     <<timestamp::@ts_bits, machine_id::@id_bits, 0::@padding_bits_128, count::64>>
   end
+
+  @compile {:inline, to_nonce: 4}
+  defp to_nonce(timestamp, machine_id, count, 64), do: to_nonce_64(timestamp, machine_id, count)
+  defp to_nonce(timestamp, machine_id, count, 96), do: to_nonce_96(timestamp, machine_id, count)
+  defp to_nonce(timestamp, machine_id, count, 128), do: to_nonce_128(timestamp, machine_id, count)
 
   @compile {:inline, gen_base_nonce: 3}
   defp gen_base_nonce(config, :counter, bit_size), do: gen_ctr_nonce(config, bit_size)
