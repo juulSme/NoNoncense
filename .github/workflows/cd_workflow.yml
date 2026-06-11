@@ -26,8 +26,8 @@ jobs:
 
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: 27.x
-          elixir-version: 1.18.x
+          otp-version: 28.x
+          elixir-version: 1.20.x
       - name: Install dependencies
         run: mix do local.hex --force, local.rebar --force, deps.get
 

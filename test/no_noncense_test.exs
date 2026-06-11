@@ -16,7 +16,7 @@ defmodule NoNoncenseTest do
     count_size = size - @ts_bits - @id_bits
     cycle_size = Integer.pow(2, min(64, count_size))
 
-    <<timestamp::@ts_bits, machine_id::@id_bits, count::size(count_size)>> = nonce
+    <<timestamp::@ts_bits, machine_id::@id_bits, count::size(^count_size)>> = nonce
 
     cycle = timestamp - init_at
     total_count = cycle * cycle_size + count
@@ -468,7 +468,7 @@ defmodule NoNoncenseTest do
   end
 
   defp test_concurrent_shared_init_ref_enc(alg, key_size, block_size) do
-    to_blocklist = fn bin -> for <<block::binary-size(block_size) <- bin>>, do: block end
+    to_blocklist = fn bin -> for <<block::binary-size(^block_size) <- bin>>, do: block end
 
     key = :crypto.strong_rand_bytes(key_size)
     schedulers = :erlang.system_info(:schedulers_online)

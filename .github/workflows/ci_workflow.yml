@@ -13,7 +13,7 @@ jobs:
       MIX_ENV: test
 
     strategy:
-      # https://hexdocs.pm/elixir/1.19/compatibility-and-deprecations.html#compatibility-between-elixir-and-erlang-otp
+      # https://hexdocs.pm/elixir/1.20/compatibility-and-deprecations.html#compatibility-between-elixir-and-erlang-otp
       fail-fast: false
       matrix:
         include:
@@ -21,15 +21,15 @@ jobs:
             otp: 25.x
             os: ubuntu-latest
             command: mix test
-          - elixir: 1.19.x
+          - elixir: 1.20.x
             otp: 28.x
             os: ubuntu-latest
             command: mix test
-          - elixir: 1.19.x
+          - elixir: 1.20.x
             otp: 28.x
             os: windows-2022
             command: mix test --exclude blowfish
-          - elixir: 1.19.x
+          - elixir: 1.20.x
             otp: 28.x
             os: macos-latest
             command: mix test --exclude blowfish
@@ -57,7 +57,7 @@ jobs:
         run: |
           mix deps.get
       - name: Check code formatting
-        if: matrix.elixir == '1.19.x' && matrix.os == 'ubuntu-latest'
+        if: matrix.elixir == '1.20.x' && matrix.os == 'ubuntu-latest'
         run: mix format --check-formatted
       - name: Compile dependencies
         run: mix deps.compile
@@ -69,5 +69,5 @@ jobs:
         run: ./test/test_conflict_guard.sh
         if: matrix.os == 'ubuntu-latest'
       - name: Create docs
-        if: matrix.elixir == '1.19.x' && matrix.os == 'ubuntu-latest'
+        if: matrix.elixir == '1.20.x' && matrix.os == 'ubuntu-latest'
         run: mix docs
