@@ -22,15 +22,15 @@ jobs:
             os: ubuntu-latest
             command: mix test
           - elixir: 1.20.x
-            otp: 28.x
+            otp: 29.x
             os: ubuntu-latest
             command: mix test
           - elixir: 1.20.x
-            otp: 28.x
+            otp: 29.x
             os: windows-2022
             command: mix test --exclude blowfish
           - elixir: 1.20.x
-            otp: 28.x
+            otp: 29.x
             os: macos-latest
             command: mix test --exclude blowfish
 
