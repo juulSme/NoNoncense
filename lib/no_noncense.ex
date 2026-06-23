@@ -127,7 +127,7 @@ defmodule NoNoncense do
 
   Block ciphers essentially create a 1:1 (bijective) mapping of each plaintext block of data to an encrypted block. Most modern ciphers use 128-bit blocks, notably "gold standard" AES, making it the perfect choice for 128-bit nonces.
 
-  The problem is that we can't use a 128-bit block cipher for 64/96-bit nonces, because we can't truncate the output. If we encrypt a 64-bit nonce with AES and then truncate the output back to 64 bits, collisions are possible. This makes sense in extremis: if we truncated to a single byte, the 2^64 unique inputs would result in only 256 unique outputs. So that's why we need ciphers with 64 and 96-bit block sizes, respectively. Unfortunately these are exceedingly rare because they are no longer secure for general-purpose usage.
+  The problem is that we can't use a 128-bit block cipher for 64/96-bit nonces, because we can't truncate the output. AES produces unique 128-bit ciphertexts, but two distinct ciphertexts can share the same 64-bit prefix — in fact, for any given ciphertext, 2^64 others share its prefix. Truncating 2^64 unique 128-bit outputs to 64 bits therefore produces near-certain collisions. So that's why we need ciphers with 64 and 96-bit block sizes, respectively. Unfortunately these are exceedingly rare because they are no longer secure for general-purpose usage.
 
   One such cipher is Speck, designed by the NSA in 2013 for lightweight encryption. It has both 64 and 96-bit variants. The optional dependency `SpeckEx`, backed by (precompiled) Rust crate [speck_cipher](https://docs.rs/crate/speck-cipher/), enables support for it. It is very fast; in line with hardware-accelerated AES. Be aware that although the primitive block cipher mode used by `NoNoncense` matches official test vectors, `SpeckEx` has not been reviewed or audited.
 
@@ -144,7 +144,7 @@ defmodule NoNoncense do
       iex> iv = NoNoncense.encrypted_nonce(128)
       iex> ciphertext = :crypto.crypto_one_time(:aes_256_cbc, key, iv, data, true)
 
-  Technically speaking, some block modes and ciphers only require IVs/nonces that are unique for a given key (but not necessarily unpredictable). Examples are CTR, GCM, CCM modes and streaming ciphers like ChaCha20. That means NoNoncense counter & sortable nonces **technically** meet the criteria, but because they leak information this is not a recommended practice.
+  Technically speaking, some block modes and ciphers only require IVs/nonces that are unique for a given key (but not necessarily unpredictable). Examples are CTR, GCM, CCM modes and streaming ciphers like ChaCha20. That means NoNoncense counter & sortable nonces *technically* meet the criteria, but because they leak information this is not a recommended practice.
   """
   alias NoNoncense.Crypto
   require Logger
