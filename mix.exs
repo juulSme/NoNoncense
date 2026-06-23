@@ -5,7 +5,7 @@ defmodule NoNoncense.MixProject do
     [
       app: :no_noncense,
       version: "0.0.0+development",
-      elixir: "~> 1.14",
+      elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: """

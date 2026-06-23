@@ -132,3 +132,11 @@ Some things of note:
 - Plaintext nonce generation rates don't scale beyond 4 cores, increasing the node count would be better.
 - Nonce encryption exacts a performance penalty, but it is manageable and scales well with cores.
 - 3DES performs atrociously compared to other cipher options.
+
+## Compatibility
+
+Elixir 1.18+ and OTP 27+ are fully supported and tested in CI.
+
+Elixir 1.15–1.17 (with OTP 25+) are supported on a best-effort basis and tested in CI. Issues will be considered but may not be fixed if they require significant workarounds.
+
+Older versions are not supported.
