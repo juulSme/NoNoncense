@@ -277,14 +277,14 @@ defmodule NoNoncense do
   def nonce(name, bit_size), do: :persistent_term.get(name) |> gen_ctr_nonce(bit_size)
 
   defp gen_ctr_nonce(config, 64) do
-    state(machine_id: machine_id, mono_epoch_offset: mo_offset, counters_ref: counters) = config
+    state(machine_id: machine_id, mono_epoch_offset: me_offset, counters_ref: counters) = config
     atomic_count = :atomics.add_get(counters, @counter64_idx, 1)
 
     # the atomic count is initialized with the timestamp and 13 counter bits
     <<timestamp::@non_count_bits_64, count::@count_bits_64>> = <<atomic_count::64>>
 
     # we may need to wait for the monotonic clock to catch up to the nonce timestamp
-    wait_until(timestamp, mo_offset)
+    wait_until(timestamp, me_offset)
 
     to_nonce_64(timestamp, machine_id, count)
   end
@@ -385,13 +385,13 @@ defmodule NoNoncense do
   def sortable_nonce(name, bit_size), do: :persistent_term.get(name) |> gen_srt_nonce(bit_size)
 
   defp gen_srt_nonce(cfg, bit_size) when bit_size in [64, 96, 128] do
-    state(machine_id: machine_id, mono_epoch_offset: mo_offset, counters_ref: counters_ref) = cfg
+    state(machine_id: machine_id, mono_epoch_offset: me_offset, counters_ref: counters_ref) = cfg
 
     ts_counter = :atomics.add_get(counters_ref, @sortable_counter_idx, 1)
     # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, we can assume no overflow
     <<current_ts::@ts_bits, new_count::@non_ts_bits_64>> = <<ts_counter::64>>
 
-    now = epoch_time(mo_offset)
+    now = epoch_time(me_offset)
 
     # if timestamp has changed since last invocation...
     if now > current_ts do
@@ -401,6 +401,9 @@ defmodule NoNoncense do
       :atomics.compare_exchange(counters_ref, @sortable_counter_idx, ts_counter, new_ts_counter)
       |> case do
         :ok -> to_nonce(now, machine_id, 0, bit_size)
+        # direct recursion will burn CPU
+        # however yielding, sleep(0) or equivalent half the max throughput to 4M/s in benchmarks
+        # at such load, the CPU has plenty of other work to do anyway
         _ -> gen_srt_nonce(cfg, bit_size)
       end
     else
