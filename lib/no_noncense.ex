@@ -148,6 +148,7 @@ defmodule NoNoncense do
   """
   alias NoNoncense.Crypto
   require Logger
+  import Bitwise
   import __MODULE__.State
 
   use __MODULE__.Constants
@@ -280,8 +281,10 @@ defmodule NoNoncense do
     state(machine_id: machine_id, mono_epoch_offset: me_offset, counters_ref: counters) = config
     atomic_count = :atomics.add_get(counters, @counter64_idx, 1)
 
-    # the atomic count is initialized with the timestamp and 13 counter bits
-    <<timestamp::@non_count_bits_64, count::@count_bits_64>> = <<atomic_count::64>>
+    # the atomic count encodes <<timestamp::51, count::13>>; extract both fields
+    # using shifts/masks instead of binary pattern matching to avoid a heap allocation
+    timestamp = atomic_count >>> @count_bits_64
+    count = atomic_count &&& @count_mask_64
 
     # we may need to wait for the monotonic clock to catch up to the nonce timestamp
     wait_until(timestamp, me_offset)
@@ -292,8 +295,11 @@ defmodule NoNoncense do
   defp gen_ctr_nonce(config, 96) do
     state(machine_id: machine_id, init_at: init_at, counters_ref: counters_ref) = config
     atomic_count = :atomics.add_get(counters_ref, @counter96_128_idx, 1)
-    # With 2^45 counter bits, the counter can't realistically overflow
-    <<cycle_n::@atomic_cycle_bits_96, count::@count_bits_96>> = <<atomic_count::64>>
+    # With 2^45 counter bits, the counter can't realistically overflow.
+    # The upper 19 bits act as a cycle counter that bumps init_at forward by 1ms
+    # on each wraparound of the lower 45 counter bits.
+    cycle_n = atomic_count >>> @count_bits_96
+    count = atomic_count &&& @count_mask_96
     to_nonce_96(init_at + cycle_n, machine_id, count)
   end
 
@@ -388,15 +394,18 @@ defmodule NoNoncense do
     state(machine_id: machine_id, mono_epoch_offset: me_offset, counters_ref: counters_ref) = cfg
 
     ts_counter = :atomics.add_get(counters_ref, @sortable_counter_idx, 1)
+    # the sortable counter encodes <<timestamp::42, count::22>>; extract both fields
+    # using shifts/masks instead of binary pattern matching to avoid a heap allocation
     # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, we can assume no overflow
-    <<current_ts::@ts_bits, new_count::@non_ts_bits_64>> = <<ts_counter::64>>
+    current_ts = ts_counter >>> @non_ts_bits_64
+    new_count = ts_counter &&& @non_ts_mask_64
 
     now = epoch_time(me_offset)
 
     # if timestamp has changed since last invocation...
     if now > current_ts do
-      # ...reset the counter. Under load, this should be a minority of cases.
-      <<new_ts_counter::64>> = <<now::@ts_bits, 0::@non_ts_bits_64>>
+      # ...reset the counter to <<now::42, 0::22>>. Under load, this should be a minority of cases.
+      new_ts_counter = now <<< @non_ts_bits_64
 
       :atomics.compare_exchange(counters_ref, @sortable_counter_idx, ts_counter, new_ts_counter)
       |> case do
