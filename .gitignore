@@ -26,3 +26,5 @@ no_noncense-*.tar
 /.vscode/*
 !/.vscode/*_example.json
 /no_noncense-*
+
+/.github/prompts
