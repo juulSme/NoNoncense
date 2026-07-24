@@ -233,7 +233,7 @@ defmodule NoNoncense do
     # the counter will overflow to 0 on the first nonce generation
     :atomics.put(counters_ref, @counter64_idx, initial_64 - 1)
     :atomics.put(counters_ref, @counter96_128_idx, Integer.pow(2, 64) - 1)
-    :atomics.put(counters_ref, @sortable_counter_idx, init_at)
+    :atomics.put(counters_ref, @sortable_counter_idx, init_at <<< @non_ts_bits_64)
 
     # initialize encryption keys
     {{c64, e64, d64}, {c96, e96, d96}, {c128, e128, d128}} = Crypto.init(opts)

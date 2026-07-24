@@ -55,6 +55,15 @@ defmodule NoNoncenseTest do
       assert NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch) == :ok
     end
 
+    test "initializes the sortable counter with the timestamp in its high-order bits" do
+      NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch)
+
+      state(init_at: init_at, counters_ref: counters_ref) = :persistent_term.get(@name)
+      sortable_counter = :atomics.get(counters_ref, @sortable_counter_idx)
+
+      assert <<^init_at::@ts_bits, 0::@non_ts_bits_64>> = <<sortable_counter::64>>
+    end
+
     test "warns on imminent timestamp overflow" do
       long_ago =
         System.system_time(:millisecond) - Integer.pow(2, @ts_bits) + 1 * 24 * 60 * 60 * 1000 +
