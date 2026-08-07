@@ -44,7 +44,7 @@ defmodule NoNoncense.MixProject do
       {:mimic, "~> 2.0", only: :test},
       {:speck_ex, "~> 0.1", optional: true},
       {:redix, "~> 1.0", optional: true, only: [:test]},
-      {:tidewave, "~> 0.5.0", only: [:dev]},
+      {:tidewave, "~> 0.5", only: [:dev]},
       {:bandit, "~> 1.0", only: [:dev]}
     ]
   end
