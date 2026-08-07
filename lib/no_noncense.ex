@@ -228,10 +228,9 @@ defmodule NoNoncense do
     # initialize nonce counters
     counters_ref = :atomics.new(3, signed: false)
 
-    # the init timestamp doubles as the higher-order bits of the counter
-    <<initial_64::64>> = <<init_at::@non_count_bits_64, 0::@count_bits_64>>
-    # the counter will overflow to 0 on the first nonce generation
-    :atomics.put(counters_ref, @counter64_idx, initial_64 - 1)
+    # counters will overflow to count 0 on the first nonce generation
+    # the init timestamp is stored in the higher-order bits of the counters
+    :atomics.put(counters_ref, @counter64_idx, (init_at <<< @count_bits_64) - 1)
     :atomics.put(counters_ref, @counter96_128_idx, 2 ** 64 - 1)
     :atomics.put(counters_ref, @sortable_counter_idx, init_at <<< @non_ts_bits_64)
 
@@ -415,11 +414,12 @@ defmodule NoNoncense do
           _ -> gen_srt_nonce(cfg, bit_size)
         end
 
-      bit_size == 64 and count >= @max_count_64 ->
-        # A 64-bit nonce has overflown its counter size, we discard and retry.
+      count >= @max_count_64 and bit_size == 64 ->
+        # Time has not progressed, but the new count overflows 64-bit counter size; retry.
         gen_srt_nonce(cfg, bit_size)
 
       true ->
+        # All good.
         to_nonce(now, machine_id, count, bit_size)
     end
   end

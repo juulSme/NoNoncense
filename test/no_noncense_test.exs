@@ -1,6 +1,7 @@
 defmodule NoNoncenseTest do
   alias NoNoncense.Crypto
   use ExUnit.Case, async: true
+  use Mimic
   use NoNoncense.Constants
   import ExUnit.CaptureLog
   import SpeckEx.Block
@@ -62,6 +63,18 @@ defmodule NoNoncenseTest do
       sortable_counter = :atomics.get(counters_ref, @sortable_counter_idx)
 
       assert <<^init_at::@ts_bits, 0::@non_ts_bits_64>> = <<sortable_counter::64>>
+    end
+
+    test "initializes the 64-bit counter one increment before count zero" do
+      NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch)
+
+      state(init_at: init_at, counters_ref: counters_ref) = :persistent_term.get(@name)
+      counter = :atomics.get(counters_ref, @counter64_idx)
+
+      assert <<initial_timestamp::@non_count_bits_64, @count_mask_64::@count_bits_64>> =
+               <<counter::64>>
+
+      assert initial_timestamp == init_at - 1
     end
 
     test "warns on imminent timestamp overflow" do
@@ -399,6 +412,37 @@ defmodule NoNoncenseTest do
       assert nonce != NoNoncense.sortable_nonce(@name, 64)
     end
 
+    test "sorts by generation time and resets its counter on a newer millisecond" do
+      nonces = for _ <- 1..10, do: NoNoncense.sortable_nonce(@name, 64)
+      assert nonces == Enum.sort(nonces)
+
+      state(init_at: init_at, counters_ref: counters_ref) = :persistent_term.get(@name)
+      :atomics.put(counters_ref, @sortable_counter_idx, 0)
+
+      nonce = NoNoncense.sortable_nonce(@name, 64)
+      assert %{count: 0, timestamp: timestamp} = nonce_info(nonce, @name)
+      assert timestamp >= init_at
+    end
+
+    test "retries an exhausted sequence after the next millisecond" do
+      monotonic_time = System.monotonic_time(:millisecond)
+
+      state(mono_epoch_offset: time_offset, counters_ref: counters_ref) =
+        :persistent_term.get(@name)
+
+      timestamp = monotonic_time + time_offset
+      <<counter::64>> = <<timestamp::@ts_bits, @max_count_64 - 1::@non_ts_bits_64>>
+      :atomics.put(counters_ref, @sortable_counter_idx, counter)
+
+      System
+      |> expect(:monotonic_time, fn :millisecond -> monotonic_time end)
+      |> expect(:monotonic_time, fn :millisecond -> monotonic_time + 1 end)
+
+      nonce = NoNoncense.sortable_nonce(@name, 64)
+      assert <<nonce_timestamp::@ts_bits, _::bits>> = nonce
+      assert nonce_timestamp == timestamp + 1
+    end
+
     test "creates unique nonces with concurrent requests" do
       tasks = 10
       nonces_per_task = 100_000
@@ -457,11 +501,18 @@ defmodule NoNoncenseTest do
     end
 
     test "returns nonce timestamp" do
-      pre_gen_dt = DateTime.utc_now()
-      Process.sleep(10)
-      nonce = NoNoncense.sortable_nonce(@name, 64)
-      nonce_dt = NoNoncense.get_datetime(@name, nonce)
-      assert :lt == DateTime.compare(pre_gen_dt, nonce_dt)
+      epoch = 1_700_000_000_000
+      timestamp = 12_345
+
+      state(mono_epoch_offset: time_offset) = :persistent_term.get(@name)
+
+      System
+      |> expect(:time_offset, fn :millisecond -> epoch + time_offset end)
+
+      nonce = <<timestamp::@ts_bits, 0::@id_bits, 0::@count_bits_64>>
+
+      assert NoNoncense.get_datetime(@name, nonce) ==
+               DateTime.from_unix!(epoch + timestamp, :millisecond)
     end
   end
 
@@ -527,6 +578,19 @@ defmodule NoNoncenseTest do
       nonce = NoNoncense.encrypted_nonce(@name, 96)
       assert bit_size(nonce) == 96
       assert nonce != NoNoncense.encrypted_nonce(@name, 96)
+    end
+
+    @tag :blowfish
+    test "decrypts Blowfish-encrypted 64 and 96-bit nonces" do
+      for plaintext <- [
+            NoNoncense.nonce(@name, 64),
+            NoNoncense.nonce(@name, 64) <> <<0::32>>
+          ] do
+        assert plaintext ==
+                 plaintext
+                 |> then(&NoNoncense.encrypt(@name, &1))
+                 |> then(&NoNoncense.decrypt(@name, &1))
+      end
     end
 
     @tag :blowfish
@@ -679,6 +743,18 @@ defmodule NoNoncenseTest do
       nonce = NoNoncense.encrypted_nonce(@name, 128)
       assert bit_size(nonce) == 128
       assert nonce != NoNoncense.encrypted_nonce(@name, 128)
+    end
+
+    test "decrypts 3DES-encrypted 64 and 96-bit nonces" do
+      for plaintext <- [
+            NoNoncense.nonce(@name, 64),
+            NoNoncense.nonce(@name, 64) <> <<0::32>>
+          ] do
+        assert plaintext ==
+                 plaintext
+                 |> then(&NoNoncense.encrypt(@name, &1))
+                 |> then(&NoNoncense.decrypt(@name, &1))
+      end
     end
 
     test "are actually 3des/aes-encrypted", %{base_key: base_key} do
