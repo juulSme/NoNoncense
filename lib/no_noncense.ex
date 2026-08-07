@@ -292,8 +292,8 @@ defmodule NoNoncense do
   end
 
   defp gen_ctr_nonce(config, 96) do
-    state(machine_id: machine_id, init_at: init_at, counters_ref: counters_ref) = config
-    atomic_count = :atomics.add_get(counters_ref, @counter96_128_idx, 1)
+    state(machine_id: machine_id, init_at: init_at, counters_ref: counters) = config
+    atomic_count = :atomics.add_get(counters, @counter96_128_idx, 1)
 
     # With 2^45 counter bits, the counter can't realistically overflow.
     # The upper 19 bits act as a cycle counter that bumps init_at forward by 1ms
@@ -305,8 +305,8 @@ defmodule NoNoncense do
   end
 
   defp gen_ctr_nonce(config, 128) do
-    state(machine_id: machine_id, init_at: init_at, counters_ref: counters_ref) = config
-    atomic_count = :atomics.add_get(counters_ref, @counter96_128_idx, 1)
+    state(machine_id: machine_id, init_at: init_at, counters_ref: counters) = config
+    atomic_count = :atomics.add_get(counters, @counter96_128_idx, 1)
     to_nonce_128(init_at, machine_id, atomic_count)
   end
 
@@ -392,36 +392,35 @@ defmodule NoNoncense do
   def sortable_nonce(name, bit_size), do: :persistent_term.get(name) |> gen_srt_nonce(bit_size)
 
   defp gen_srt_nonce(cfg, bit_size) when bit_size in [64, 96, 128] do
-    state(machine_id: machine_id, mono_epoch_offset: me_offset, counters_ref: counters_ref) = cfg
+    state(machine_id: machine_id, mono_epoch_offset: me_offset, counters_ref: counters) = cfg
 
-    ts_counter = :atomics.add_get(counters_ref, @sortable_counter_idx, 1)
+    atomic_count = :atomics.add_get(counters, @sortable_counter_idx, 1)
     # the atomic counter encodes <<timestamp::42, count::22>>; extract both fields
-    # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, we can assume no overflow
-    current_ts = ts_counter >>> @non_ts_bits_64
-    new_count = ts_counter &&& @non_ts_mask_64
+    # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, the +1 will not overflow into the ts
+    previous_ts = atomic_count >>> @non_ts_bits_64
+    count = atomic_count &&& @non_ts_mask_64
 
     now = epoch_time(me_offset)
 
-    # if timestamp has changed since last invocation...
-    if now > current_ts do
-      # ...reset the counter to <<now::42, 0::22>>. Under load, this should be a minority of cases.
-      new_ts_counter = now <<< @non_ts_bits_64
+    cond do
+      now > previous_ts ->
+        # Time has progressed, reset the counter to <<now::42, 0::22>>.
+        new_atomic_count = now <<< @non_ts_bits_64
 
-      :atomics.compare_exchange(counters_ref, @sortable_counter_idx, ts_counter, new_ts_counter)
-      |> case do
-        :ok -> to_nonce(now, machine_id, 0, bit_size)
-        # direct recursion will burn CPU
-        # however yielding, sleep(0) or equivalent half the max throughput to 4M/s in benchmarks
-        # at such load, the CPU has plenty of other work to do anyway
-        _ -> gen_srt_nonce(cfg, bit_size)
-      end
-    else
-      # larger nonce sizes will not overflow their >= 2^45 bits counters
-      if bit_size == 64 and new_count >= @max_count_64 do
+        :atomics.compare_exchange(counters, @sortable_counter_idx, atomic_count, new_atomic_count)
+        |> case do
+          :ok -> to_nonce(now, machine_id, 0, bit_size)
+          # yielding, sleep(0) or equivalent half the max throughput to 4M/s in benchmarks
+          # so we accept the CPU burn and (tail-)recurse immediately
+          _ -> gen_srt_nonce(cfg, bit_size)
+        end
+
+      bit_size == 64 and count >= @max_count_64 ->
+        # A 64-bit nonce has overflown its counter size, we discard and retry.
         gen_srt_nonce(cfg, bit_size)
-      else
-        to_nonce(now, machine_id, new_count, bit_size)
-      end
+
+      true ->
+        to_nonce(now, machine_id, count, bit_size)
     end
   end
 
