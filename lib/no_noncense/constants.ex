@@ -10,7 +10,7 @@ defmodule NoNoncense.Constants do
       # no of id bits
       @id_bits 9
       # max value of machine id
-      @machine_id_limit Integer.pow(2, @id_bits) - 1
+      @machine_id_limit 2 ** @id_bits - 1
       # no of non-timestamp bits in a 64-bit nonce
       @non_ts_bits_64 64 - @ts_bits
       # no of counter bits in a 64-bit nonce
@@ -18,13 +18,13 @@ defmodule NoNoncense.Constants do
       # no of counter bits in a 96-bit nonce
       @count_bits_96 96 - @ts_bits - @id_bits
       # max value of 64-bit nonce counter
-      @max_count_64 Integer.pow(2, @count_bits_64)
+      @max_count_64 2 ** @count_bits_64
       # bitmask for the 13 counter bits in a 64-bit nonce
       @count_mask_64 @max_count_64 - 1
       # bitmask for the 45 counter bits in a 96-bit nonce
-      @count_mask_96 Integer.pow(2, @count_bits_96) - 1
+      @count_mask_96 2 ** @count_bits_96 - 1
       # bitmask for the 22 non-timestamp bits in the sortable counter
-      @non_ts_mask_64 Integer.pow(2, @non_ts_bits_64) - 1
+      @non_ts_mask_64 2 ** @non_ts_bits_64 - 1
       # no of non-count bits in a 64-bit nonce
       @non_count_bits_64 64 - @count_bits_64
       # no of cycle counter bits in the :atomics counter of a 96-bit nonce
@@ -32,7 +32,7 @@ defmodule NoNoncense.Constants do
       # no of padding bits in a 128-bit nonce
       @padding_bits_128 128 - @ts_bits - @id_bits - 64
       # maximum timestamp value
-      @max_ts Integer.pow(2, @ts_bits)
+      @max_ts 2 ** @ts_bits
 
       # atomics indexes
       @counter64_idx 1

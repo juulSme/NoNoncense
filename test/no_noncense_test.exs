@@ -14,7 +14,7 @@ defmodule NoNoncenseTest do
 
     size = bit_size(nonce)
     count_size = size - @ts_bits - @id_bits
-    cycle_size = Integer.pow(2, min(64, count_size))
+    cycle_size = 2 ** min(64, count_size)
 
     <<timestamp::@ts_bits, machine_id::@id_bits, count::size(^count_size)>> = nonce
 
@@ -66,7 +66,7 @@ defmodule NoNoncenseTest do
 
     test "warns on imminent timestamp overflow" do
       long_ago =
-        System.system_time(:millisecond) - Integer.pow(2, @ts_bits) + 1 * 24 * 60 * 60 * 1000 +
+        System.system_time(:millisecond) - 2 ** @ts_bits + 1 * 24 * 60 * 60 * 1000 +
           60_000
 
       {_, msg} =
@@ -78,7 +78,7 @@ defmodule NoNoncenseTest do
     end
 
     test "raises on timestamp overflow" do
-      long_ago = System.system_time(:millisecond) - Integer.pow(2, @ts_bits) - 1000
+      long_ago = System.system_time(:millisecond) - 2 ** @ts_bits - 1000
 
       assert_raise RuntimeError, "timestamp overflow", fn ->
         NoNoncense.init(machine_id: 0, name: @name, epoch: long_ago)
@@ -274,7 +274,7 @@ defmodule NoNoncenseTest do
       nonce1 = NoNoncense.nonce(@name, 64)
       assert %{count: 0, cycle: 0, timestamp: n1_ts} = nonce_info(nonce1, @name)
 
-      cycle_size = Integer.pow(2, @count_bits_64)
+      cycle_size = 2 ** @count_bits_64
       :atomics.add(counter_ref, @counter64_idx, cycle_size - 1)
 
       nonce2 = NoNoncense.nonce(@name, 64)
@@ -348,7 +348,7 @@ defmodule NoNoncenseTest do
       nonce1 = NoNoncense.nonce(@name, 96)
       assert %{count: 0, cycle: 0, timestamp: n1_ts} = nonce_info(nonce1, @name)
 
-      cycle_size = Integer.pow(2, @count_bits_96)
+      cycle_size = 2 ** @count_bits_96
       :atomics.add(counter_ref, @counter96_128_idx, cycle_size - 1)
 
       nonce2 = NoNoncense.nonce(@name, 96)
@@ -563,8 +563,8 @@ defmodule NoNoncenseTest do
 
       max_nonce_2n = 29
       chunk_size_2n = 18
-      chunk_size = Integer.pow(2, chunk_size_2n)
-      chunks = Integer.pow(2, max_nonce_2n - chunk_size_2n)
+      chunk_size = 2 ** chunk_size_2n
+      chunks = 2 ** max_nonce_2n - chunk_size_2n
 
       1..chunks
       |> Task.async_stream(

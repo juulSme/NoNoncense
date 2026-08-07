@@ -232,7 +232,7 @@ defmodule NoNoncense do
     <<initial_64::64>> = <<init_at::@non_count_bits_64, 0::@count_bits_64>>
     # the counter will overflow to 0 on the first nonce generation
     :atomics.put(counters_ref, @counter64_idx, initial_64 - 1)
-    :atomics.put(counters_ref, @counter96_128_idx, Integer.pow(2, 64) - 1)
+    :atomics.put(counters_ref, @counter96_128_idx, 2 ** 64 - 1)
     :atomics.put(counters_ref, @sortable_counter_idx, init_at <<< @non_ts_bits_64)
 
     # initialize encryption keys
@@ -282,7 +282,6 @@ defmodule NoNoncense do
     atomic_count = :atomics.add_get(counters, @counter64_idx, 1)
 
     # the atomic count encodes <<timestamp::51, count::13>>; extract both fields
-    # using shifts/masks instead of binary pattern matching to avoid a heap allocation
     timestamp = atomic_count >>> @count_bits_64
     count = atomic_count &&& @count_mask_64
 
@@ -295,11 +294,13 @@ defmodule NoNoncense do
   defp gen_ctr_nonce(config, 96) do
     state(machine_id: machine_id, init_at: init_at, counters_ref: counters_ref) = config
     atomic_count = :atomics.add_get(counters_ref, @counter96_128_idx, 1)
+
     # With 2^45 counter bits, the counter can't realistically overflow.
     # The upper 19 bits act as a cycle counter that bumps init_at forward by 1ms
     # on each wraparound of the lower 45 counter bits.
     cycle_n = atomic_count >>> @count_bits_96
     count = atomic_count &&& @count_mask_96
+
     to_nonce_96(init_at + cycle_n, machine_id, count)
   end
 
@@ -394,8 +395,7 @@ defmodule NoNoncense do
     state(machine_id: machine_id, mono_epoch_offset: me_offset, counters_ref: counters_ref) = cfg
 
     ts_counter = :atomics.add_get(counters_ref, @sortable_counter_idx, 1)
-    # the sortable counter encodes <<timestamp::42, count::22>>; extract both fields
-    # using shifts/masks instead of binary pattern matching to avoid a heap allocation
+    # the atomic counter encodes <<timestamp::42, count::22>>; extract both fields
     # 2^22 * 1000 = 4B ops/s is not an attainable generation rate, we can assume no overflow
     current_ts = ts_counter >>> @non_ts_bits_64
     new_count = ts_counter &&& @non_ts_mask_64

@@ -9,8 +9,7 @@ defmodule NoNoncense.BitwiseTest do
           <<0::@non_count_bits_64, 0::@count_bits_64>>,
           <<0::@non_count_bits_64, @count_mask_64::@count_bits_64>>,
           <<1::@non_count_bits_64, 0::@count_bits_64>>,
-          <<Integer.pow(2, @non_count_bits_64) - 1::@non_count_bits_64,
-            @count_mask_64::@count_bits_64>>
+          <<2 ** @non_count_bits_64 - 1::@non_count_bits_64, @count_mask_64::@count_bits_64>>
         ] do
       <<timestamp::@non_count_bits_64, count::@count_bits_64>> = <<atomic_count::64>>
 
@@ -24,7 +23,7 @@ defmodule NoNoncense.BitwiseTest do
           <<0::@atomic_cycle_bits_96, 0::@count_bits_96>>,
           <<0::@atomic_cycle_bits_96, @count_mask_96::@count_bits_96>>,
           <<1::@atomic_cycle_bits_96, 0::@count_bits_96>>,
-          <<Integer.pow(2, @atomic_cycle_bits_96) - 1::@atomic_cycle_bits_96,
+          <<2 ** @atomic_cycle_bits_96 - 1::@atomic_cycle_bits_96,
             @count_mask_96::@count_bits_96>>
         ] do
       <<cycle_n::@atomic_cycle_bits_96, count::@count_bits_96>> = <<atomic_count::64>>
@@ -39,7 +38,7 @@ defmodule NoNoncense.BitwiseTest do
           <<0::@ts_bits, 0::@non_ts_bits_64>>,
           <<0::@ts_bits, @non_ts_mask_64::@non_ts_bits_64>>,
           <<1::@ts_bits, 0::@non_ts_bits_64>>,
-          <<Integer.pow(2, @ts_bits) - 1::@ts_bits, @non_ts_mask_64::@non_ts_bits_64>>
+          <<2 ** @ts_bits - 1::@ts_bits, @non_ts_mask_64::@non_ts_bits_64>>
         ] do
       <<timestamp::@ts_bits, count::@non_ts_bits_64>> = <<ts_counter::64>>
 
@@ -49,7 +48,7 @@ defmodule NoNoncense.BitwiseTest do
   end
 
   test "packs sortable timestamps like binary matching" do
-    for timestamp <- [0, 1, Integer.pow(2, @ts_bits) - 1] do
+    for timestamp <- [0, 1, 2 ** @ts_bits - 1] do
       <<expected::64>> = <<timestamp::@ts_bits, 0::@non_ts_bits_64>>
 
       assert timestamp <<< @non_ts_bits_64 == expected
