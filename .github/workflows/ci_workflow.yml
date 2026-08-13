@@ -12,6 +12,20 @@ jobs:
     env:
       MIX_ENV: test
 
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: supersecret
+        ports:
+          - 5432:5432
+      mysql:
+        image: mysql:debian
+        env:
+          MYSQL_ROOT_PASSWORD: supersecret
+        ports:
+          - 3306:3306
+
     strategy:
       # https://hexdocs.pm/elixir/1.20/compatibility-and-deprecations.html#compatibility-between-elixir-and-erlang-otp
       fail-fast: false

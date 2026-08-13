@@ -1,25 +1,69 @@
 defmodule NoNoncense.MachineId.ConflictGuard do
   @moduledoc """
-  Guards against machine ID conflicts between nodes. If a new node joins the cluster with the same ID, it is sent the machine IDs of all existing nodes, will become aware of the ID conflict and will call the `on_conflict` callback that can take action to prevent bad stuff from happening (for example, that the uniqueness guarantee of `NoNoncense` will no longer hold).
+  Guards against machine ID conflicts between nodes by broadcasting each node's machine ID to
+  newly connected peers and calling `on_conflict` whenever a duplicate is detected.
 
-  By default, the `on_conflict` callback emergeny shuts down the entire node using `:erlang.halt/1` with status code 111.
+  ## When to use
 
-  Of course, all of this only works if the nodes are actually connected to one another.
+  `ConflictGuard` is useful when running `NoNoncense` with strategies that do not provide
+  server-side uniqueness guarantees, such as `NoNoncense.MachineId.Strategy.HostIdentifiers` or
+  `NoNoncense.MachineId.Strategy.EnvironmentVariable`. It adds a runtime cross-check that a
+  split-brain or misconfiguration hasn't caused two nodes to end up with the same ID.
+
+  For lease-based strategies (`SqlLease`, `RedisLease`), the external coordinator already
+  prevents duplicate IDs, so `ConflictGuard` provides little additional value — though it
+  won't hurt to enable it.
+
+  > #### Requires distributed Erlang {: .warning}
+  >
+  > `ConflictGuard` only works when nodes are connected to each other via distributed Erlang
+  > (i.e. started with `--name` / `--sname` and a shared cookie). Without it, the conflict
+  > checks never run.
+
+  ## Default action
+
+  When a conflict is detected, the newer node calls `on_conflict`, which defaults to halting
+  the node immediately via `:erlang.halt(111)`.
+
+  ## Usage
+
+  `NoNoncense.MachineId` starts `ConflictGuard` by default. Pass
+  `enable_conflict_guard?: false` to disable it. When enabled through `NoNoncense.MachineId`,
+  the supervisor derives the guard's name and resolves the machine ID through its lease manager.
+  A conflict signals the lease manager that its lease was lost:
+
+      {NoNoncense.MachineId,
+       strategy: NoNoncense.MachineId.Strategy.HostIdentifiers,
+       instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
+
+  When started manually, supply `:machine_id` or `:lease_manager` to resolve the ID, and
+  `:on_conflict` to override the default halt behaviour.
   """
   use GenServer
+  alias NoNoncense.Telemetry
   require Logger
 
-  @type opts :: [name: module(), on_conflict: (-> any()), machine_id: non_neg_integer()]
+  @type opt ::
+          {:name, GenServer.name()}
+          | {:on_conflict, (-> any())}
+          | {:machine_id, integer() | (-> integer())}
 
-  @doc """
-  Let's get this puppy going!
-  """
+  @type opts :: [opt()]
+
+  @doc "Starts the conflict guard."
   @spec start_link(opts()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = opts[:name] || __MODULE__
     on_conflict = opts[:on_conflict] || fn -> :erlang.halt(111) end
-    machine_id = Keyword.fetch!(opts, :machine_id)
-    init_at = System.system_time(:millisecond)
+
+    machine_id =
+      case opts[:machine_id] do
+        id when is_integer(id) -> fn -> id end
+        fun when is_function(fun, 0) -> fun
+        _ -> raise ArgumentError, "machine ID is required as a literal or getter/0"
+      end
+
+    init_at = System.system_time(:microsecond)
     state = %{machine_id: machine_id, name: name, init_at: init_at, on_conflict: on_conflict}
     GenServer.start_link(__MODULE__, state, name: name)
   end
@@ -53,17 +97,27 @@ defmodule NoNoncense.MachineId.ConflictGuard do
 
   @impl true
   def handle_cast({:id_from, node, %{machine_id: others_id, init_at: others_init_at}}, state) do
-    if state.machine_id == others_id do
-      msg = "Node #{node} has the same machine ID (#{others_id}) as me (#{Node.self()})."
+    machine_id = state.machine_id.()
 
-      if state.init_at >= others_init_at do
-        Logger.critical("#{msg} I'm the newer node, taking evasive action!")
+    cond do
+      is_nil(machine_id) ->
+        Logger.debug("Node #{node} joined but this node has no machine ID to compare with")
+        Telemetry.peer_checked(:local_id_unavailable)
+
+      machine_id != others_id ->
+        Logger.debug("Node #{node} with machine ID #{others_id} joined")
+        Telemetry.peer_checked(:different)
+
+      state.init_at >= others_init_at ->
+        Logger.critical("Node #{node} has a conflicting ID; this node will resolve the conflict")
+        Telemetry.peer_checked(:match)
+        Telemetry.conflict(:local_node)
         state.on_conflict.()
-      else
-        Logger.critical("#{msg} I was here first, let the other guy fix it.")
-      end
-    else
-      Logger.debug("Node #{node} with machine ID #{others_id} joined.")
+
+      true ->
+        Logger.critical("Node #{node} has a conflicting ID; it will resolve the conflict")
+        Telemetry.peer_checked(:match)
+        Telemetry.conflict(:remote_node)
     end
 
     {:noreply, state}

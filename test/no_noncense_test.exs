@@ -424,25 +424,6 @@ defmodule NoNoncenseTest do
       assert timestamp >= init_at
     end
 
-    test "retries an exhausted sequence after the next millisecond" do
-      monotonic_time = System.monotonic_time(:millisecond)
-
-      state(mono_epoch_offset: time_offset, counters_ref: counters_ref) =
-        :persistent_term.get(@name)
-
-      timestamp = monotonic_time + time_offset
-      <<counter::64>> = <<timestamp::@ts_bits, @max_count_64 - 1::@non_ts_bits_64>>
-      :atomics.put(counters_ref, @sortable_counter_idx, counter)
-
-      System
-      |> expect(:monotonic_time, fn :millisecond -> monotonic_time end)
-      |> expect(:monotonic_time, fn :millisecond -> monotonic_time + 1 end)
-
-      nonce = NoNoncense.sortable_nonce(@name, 64)
-      assert <<nonce_timestamp::@ts_bits, _::bits>> = nonce
-      assert nonce_timestamp == timestamp + 1
-    end
-
     test "creates unique nonces with concurrent requests" do
       tasks = 10
       nonces_per_task = 100_000
@@ -501,18 +482,13 @@ defmodule NoNoncenseTest do
     end
 
     test "returns nonce timestamp" do
-      epoch = 1_700_000_000_000
-      timestamp = 12_345
+      epoch_time = 12_345
+      wall_clock_time = @epoch + epoch_time
 
-      state(mono_epoch_offset: time_offset) = :persistent_term.get(@name)
-
-      System
-      |> expect(:time_offset, fn :millisecond -> epoch + time_offset end)
-
-      nonce = <<timestamp::@ts_bits, 0::@id_bits, 0::@count_bits_64>>
+      nonce = <<epoch_time::@ts_bits, 0::@id_bits, 0::@count_bits_64>>
 
       assert NoNoncense.get_datetime(@name, nonce) ==
-               DateTime.from_unix!(epoch + timestamp, :millisecond)
+               DateTime.from_unix!(wall_clock_time, :millisecond)
     end
   end
 

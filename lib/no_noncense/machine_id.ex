@@ -1,115 +1,134 @@
 defmodule NoNoncense.MachineId do
+  alias NoNoncense.MachineId.{ConflictGuard, LeaseCache, LeaseManager}
+
+  @options_docs """
+    * `:name` - registered name of this supervisor (default `#{inspect(__MODULE__)}`)
+    * `:instances` (required) - list of per-instance option keywords, each accepting the same options as `NoNoncense.init/1` (`:base_key`, `:epoch`, etc.). Note that names must be unique for each factory, the default name is `NoNoncense`.
+    * `:enable_conflict_guard?` - whether to start a `NoNoncense.MachineId.ConflictGuard` as a supervised child (default `true`)
+  #{LeaseManager.options_docs()}
+  """
+
   @moduledoc """
-  Determine unique machine IDs for nodes, which can be used to guarantee uniqueness in a distributed system.
+  Supervised machine ID lease management for `NoNoncense`.
 
-  To determine the unique node ID, you must provide a list of possible node identifiers. The possible identifiers are IP addresses, OTP node identifiers, hostnames and fully-qualified domain names. You should only provide possible identifiers that can't conflict with one another. So if you don't explicitly set OTP node names you should not add the default `:"nonode@nohost"` to your identifier list.
+  Every node generating nonces needs a unique machine ID (0–511). `NoNoncense.MachineId`
+  acquires and holds that ID through a pluggable strategy, automatically renewing it in the
+  background. `LeaseManager` directly initializes the configured `NoNoncense` factories after
+  acquiring a lease, disables them when that lease is lost, and initializes them again after a
+  successful reacquisition.
 
-  Notes:
-  - The default `:max_nodes` is 512, producing valid IDs in the range 0..511.
-  - The `node_list` is treated as a set (an `:ordset`) when matching host identifiers; its ordering does not influence which ID is chosen. What matters is that every node uses the same set of possible identifiers so matches are stable across nodes.
+  ## Usage
 
-  > #### Use the same node list everywhere {: .warning}
-  >
-  > Your `node_list` must be the same for every node or the generated machine IDs will not be unique.
+  Add it to your supervision tree in the appropriate place (in this case, after your Repo):
 
-  You can configure the options in your application environment and just pass them into `id/1`.
+      children = [
+        ...
+        MyApp.Repo,
+        {NoNoncense.MachineId,
+         strategy: NoNoncense.MachineId.Strategy.SqlLease,
+         strategy_opts: [repo: MyApp.Repo],
+         instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
+      ]
 
-  After https://github.com/blitzstudios/snowflake
+  Startup blocks until the initial lease is acquired. Once started, the lease renews
+  automatically. If a lease is confirmed lost or reaches its local expiry deadline, the factories
+  are disabled, `:on_lease_lost` is called with the reason, and the manager keeps trying to
+  acquire a lease. The callback may notify, halt the node, or take any other application-specific
+  action.
+
+  ## Strategies
+
+  | Strategy | Infrastructure | Notes |
+  |---|---|---|
+  | [`HostIdentifiers`](./NoNoncense.MachineId.Strategy.HostIdentifiers.html) | None | Derives IDs from node names/IPs; requires identical config on all nodes; no coordination |
+  | [`EnvironmentVariable`](./NoNoncense.MachineId.Strategy.EnvironmentVariable.html) | Kubernetes StatefulSet | Reads pod ordinal env var; no coordination |
+  | [`SqlLease`](./NoNoncense.MachineId.Strategy.SqlLease.html) | PostgreSQL or MySQL | Dynamically coordinates across nodes; requires a migration (see module doc) |
+  | [`RedisLease`](./NoNoncense.MachineId.Strategy.RedisLease.html) | Redis 8+ / Valkey 9+ | Dynamically coordinates across nodes; requires [`HSETEX`](https://valkey.io/commands/hsetex/) support |
+
+  ## Conflict Guard
+
+  A `NoNoncense.MachineId.ConflictGuard` is started by default. Set
+  `enable_conflict_guard?: false` to disable it. The guard uses Erlang node networking to detect
+  machine ID conflicts. It works with every strategy but is most useful with strategies that don't
+  have a central lease coordinator. It requires distributed Erlang; without connected nodes, it
+  has no peers to compare.
+
+  ## Options
+
+  #{@options_docs}
   """
-  @defaults %{machine_id: nil, node_list: [], max_nodes: 512}
+  use Supervisor
 
-  @type host_identifiers :: [binary() | atom()]
-  @type id_opts :: [
-          machine_id: non_neg_integer() | nil,
-          node_list: host_identifiers(),
-          max_nodes: pos_integer()
-        ]
+  @type opt ::
+          {:name, Supervisor.name()}
+          | {:strategy, module()}
+          | {:strategy_opts, keyword()}
+          | {:lease_duration, pos_integer()}
+          | {:renew_interval, pos_integer()}
+          | {:acquire_timeout, pos_integer() | :infinity}
+          | {:on_lease_lost, (term() -> any())}
+          | {:instances, [NoNoncense.init_opt()]}
+          | {:enable_conflict_guard?, boolean()}
+
+  @type opts :: [opt()]
 
   @doc """
-  Determine the current node's machine ID.
+  Starts the machine ID supervisor, blocking until the initial lease is acquired.
 
-  ## Examples / doctests
+  ## Options
 
-      # provide a list of possible node identifiers
-      iex> node_list = [:a, :b, :nonode@nohost, "1.1.1.1"]
-      iex> MachineId.id!(node_list: node_list)
-      2
-
-      # a statically configured ID will override the node list
-      iex> node_list = [:a, :b, :nonode@nohost, "1.1.1.1"]
-      iex> MachineId.id!(machine_id: 10, node_list: node_list)
-      10
-
-      # the node ID must be within the provided range (default 0-511)
-      iex> node_list = [:a, :b, :nonode@nohost, "1.1.1.1"]
-      iex> MachineId.id!(max_nodes: 2, node_list: node_list)
-      ** (RuntimeError) Node ID 2 out of range 0-1
-
-      # raises when the machine ID could not be determined from the node list
-      iex> node_list = ["1.1.1.1"]
-      iex> MachineId.id!(node_list: node_list)
-      ** (RuntimeError) machine ID could not be determined
+  #{@options_docs}
   """
-  @spec id!(id_opts()) :: non_neg_integer()
-  def id!(opts \\ []), do: Enum.into(opts, @defaults) |> gen_machine_id()
+  @spec start_link(opts()) :: Supervisor.on_start()
+  def start_link(opts) do
+    name = opts[:name] || __MODULE__
+    Supervisor.start_link(__MODULE__, opts, name: name)
+  end
 
-  @doc """
-  Get a list of all identifiers of the current node. You can use one or more of these values to populate your node list.
+  @impl true
+  def init(opts) do
+    name = opts[:name] || __MODULE__
 
-  ## Examples / doctests
+    # LeaseCache
+    cache_name = Module.concat(name, :LeaseCache)
+    cache_opts = [name: cache_name]
+    cache = {LeaseCache, cache_opts}
 
-      iex> MachineId.host_identifiers()
-      [:nonode@nohost, "host.mydomain.com", "10.11.12.13", "myhost", "fe80::1234::abcd"]
-  """
-  @spec host_identifiers() :: host_identifiers()
-  def host_identifiers() do
-    ([hostname(), fqdn(), Node.self()] ++ ip_addrs())
+    # LeaseManager
+    lease_manager_name = Module.concat(name, :LeaseManager)
+    instances = Keyword.fetch!(opts, :instances)
+    instances = Enum.map(instances, &Keyword.put_new(&1, :name, NoNoncense))
+
+    lease_manager_opts =
+      opts
+      |> Keyword.drop([:enable_conflict_guard?])
+      |> Keyword.merge(name: lease_manager_name, instances: instances, lease_cache: cache_name)
+
+    lease_manager = {LeaseManager, lease_manager_opts}
+
+    # ConflictGuard
+    enable_cg? = Keyword.get(opts, :enable_conflict_guard?, true)
+    conflict_guard_name = Module.concat(name, :ConflictGuard)
+    # ConflictGuard should not crash if LeaseManager is down
+    get_machine_id = safe_caller(fn -> LeaseManager.machine_id(lease_manager_name) end, nil)
+    on_conflict = safe_caller(fn -> LeaseManager.lease_lost(lease_manager_name) end, :ok)
+    cg_opts = [name: conflict_guard_name, on_conflict: on_conflict, machine_id: get_machine_id]
+    cg = if enable_cg?, do: {ConflictGuard, cg_opts}, else: nil
+
+    # Supervisor
+    [cache, lease_manager, cg]
     |> Enum.reject(&is_nil/1)
-    |> :ordsets.from_list()
+    |> Supervisor.init(strategy: :one_for_one)
   end
 
-  ###########
-  # Private #
-  ###########
-
-  defp gen_machine_id(config = %{machine_id: nil}) do
-    node_list = config.node_list |> :ordsets.from_list()
-    host_identifiers = host_identifiers()
-
-    case :ordsets.intersection(host_identifiers, node_list) do
-      [matching_node | _] ->
-        id = Enum.find_index(node_list, &(&1 == matching_node))
-        gen_machine_id(%{config | machine_id: id})
-
-      _ ->
-        raise RuntimeError, "machine ID could not be determined"
-    end
-  end
-
-  defp gen_machine_id(c = %{machine_id: id}) when id >= 0 and id < c.max_nodes, do: id
-
-  defp gen_machine_id(c) do
-    raise(RuntimeError, "Node ID #{c.machine_id} out of range 0-#{c.max_nodes - 1}")
-  end
-
-  defp ip_addrs() do
-    {:ok, ifaddrs} = :inet.getifaddrs()
-
-    ifaddrs
-    |> Stream.map(fn {_name, props} -> props[:addr] end)
-    |> Stream.reject(&is_nil/1)
-    |> Enum.map(fn addr -> addr |> :inet.ntoa() |> to_string() end)
-  end
-
-  defp hostname() do
-    {:ok, name} = :inet.gethostname()
-    to_string(name)
-  end
-
-  defp fqdn() do
-    case :inet.get_rc()[:domain] do
-      nil -> nil
-      domain -> hostname() <> "." <> to_string(domain)
+  # create a function that can call a genserver that is down without crashing
+  defp safe_caller(fun, result_if_down) do
+    fn ->
+      try do
+        fun.()
+      catch
+        :exit, {:noproc, _} -> result_if_down
+      end
     end
   end
 end

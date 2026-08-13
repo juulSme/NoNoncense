@@ -16,26 +16,26 @@ defmodule NoNoncense do
 
   ## Usage
 
-  Note that `NoNoncense` is not a GenServer. Instead it stores its initial state using `m::persistent_term` and its internal counter using `m::atomics`. Because `m::persistent_term` triggers a garbage collection cycle on writes, it is recommended to initialize your `NoNoncense` instance(s) at application start, when there is hardly any garbage to collect.
+  Add `NoNoncense.MachineId` to your supervision tree. It acquires and renews a unique machine ID
+  through a pluggable strategy and initializes your `NoNoncense` instances automatically. Startup
+  blocks until the initial lease is acquired.
+
+  For example, with [`SqlLease`](./NoNoncense.MachineId.Strategy.SqlLease.html) (after running its migration):
 
       # lib/my_app/application.ex
-      # generate a machine ID, start conflict guard and initialize a NoNoncense instance
       defmodule MyApp.Application do
         use Application
 
         def start(_type, _args) do
-          machine_id = NoNoncense.MachineId.id!(node_list: [:"myapp@127.0.0.1"])
-          # base_key is required for encrypted nonces
-          :ok = NoNoncense.init(machine_id: machine_id, base_key: System.get_env("BASE_KEY"))
+          children = [
+            MyApp.Repo,
+            {NoNoncense.MachineId,
+             strategy: NoNoncense.MachineId.Strategy.SqlLease,
+             strategy_opts: [repo: MyApp.Repo],
+             instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
+          ]
 
-          children =
-            [
-              # optional but recommended
-              {NoNoncense.MachineId.ConflictGuard, [machine_id: machine_id]}
-            ]
-
-          opts = [strategy: :one_for_one, name: MyApp.Supervisor]
-          Supervisor.start_link(children, opts)
+          Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
         end
       end
 
@@ -57,6 +57,15 @@ defmodule NoNoncense do
       iex> <<_::96>> = NoNoncense.encrypted_nonce(96)
       iex> <<_::128>> = NoNoncense.encrypted_nonce(128)
 
+  ### Machine ID strategies
+
+  | Strategy | Infrastructure | Notes |
+  |---|---|---|
+  | [`HostIdentifiers`](./NoNoncense.MachineId.Strategy.HostIdentifiers.html) | None | Derives IDs from node names/IPs; requires identical config on all nodes; no coordination |
+  | [`EnvironmentVariable`](./NoNoncense.MachineId.Strategy.EnvironmentVariable.html) | Kubernetes StatefulSet | Reads pod ordinal env var; no coordination |
+  | [`SqlLease`](./NoNoncense.MachineId.Strategy.SqlLease.html) | PostgreSQL or MySQL | Dynamically coordinates across nodes; requires a migration (see module doc) |
+  | [`RedisLease`](./NoNoncense.MachineId.Strategy.RedisLease.html) | Redis 8+ / Valkey 9+ | Dynamically coordinates across nodes; requires [`HSETEX`](https://valkey.io/commands/hsetex/) support |
+
   ## Anatomy of a nonce
 
   While there are different types of nonces, they share a common binary composition.
@@ -77,7 +86,7 @@ defmodule NoNoncense do
 
   Nonces are guaranteed to be unique **if and only if**:
   - You use one instance and one nonce type. Only use separate instances for separate purposes (database IDs and encryption IVs, for example).
-  - Machine IDs are unique for each node (`NoNoncense.MachineId` and `NoNoncense.MachineId.ConflictGuard` can help with that).
+  - Machine IDs are unique for each node (`NoNoncense.MachineId` handles this automatically; `NoNoncense.MachineId.ConflictGuard` adds an extra safeguard against split-brain).
   - Nodes maintain a somewhat accurate clock (specifically, the UTC clock must progress between node restarts).
   - **Sortable nonces only:** the machine clock has to be accurate.
   - **Encrypted nonces only:** the cipher and key must not be changed.
@@ -145,6 +154,12 @@ defmodule NoNoncense do
       iex> ciphertext = :crypto.crypto_one_time(:aes_256_cbc, key, iv, data, true)
 
   Technically speaking, some block modes and ciphers only require IVs/nonces that are unique for a given key (but not necessarily unpredictable). Examples are CTR, GCM, CCM modes and streaming ciphers like ChaCha20. That means NoNoncense counter & sortable nonces *technically* meet the criteria, but because they leak information this is not a recommended practice.
+
+  ## Telemetry
+
+  When the optional `:telemetry` dependency is available, NoNoncense emits events for machine ID
+  lease management and conflict detection. Nonce generation is not instrumented. See
+  [`NoNoncense.Telemetry`](./NoNoncense.Telemetry.html) for event names, measurements, and metadata.
   """
   alias NoNoncense.Crypto
   require Logger
@@ -213,7 +228,7 @@ defmodule NoNoncense do
     end
 
     # the offset of the monotonic clock from the wall clock epoch
-    mono_epoch_offset = System.time_offset(:millisecond) - epoch
+    mono_epoch_offset = :erlang.time_offset(:millisecond) - epoch
     init_at = epoch_time(mono_epoch_offset)
 
     # verify timestamp does not overflow
@@ -228,8 +243,8 @@ defmodule NoNoncense do
     # initialize nonce counters
     counters_ref = :atomics.new(3, signed: false)
 
-    # counters will overflow to count 0 on the first nonce generation
-    # the init timestamp is stored in the higher-order bits of the counters
+    # counters decreased by one will overflow to count 0 on the first nonce generation
+    # counters with bit-shifted init_at store the timestamp in their higher-order bits
     :atomics.put(counters_ref, @counter64_idx, (init_at <<< @count_bits_64) - 1)
     :atomics.put(counters_ref, @counter96_128_idx, 2 ** 64 - 1)
     :atomics.put(counters_ref, @sortable_counter_idx, init_at <<< @non_ts_bits_64)
@@ -419,7 +434,7 @@ defmodule NoNoncense do
         gen_srt_nonce(cfg, bit_size)
 
       true ->
-        # All good.
+        # Time has not progressed; generate a nonce using the increased count.
         to_nonce(now, machine_id, count, bit_size)
     end
   end
@@ -437,7 +452,7 @@ defmodule NoNoncense do
   def get_datetime(name \\ __MODULE__, nonce) do
     state(mono_epoch_offset: mono_epoch_offset) = :persistent_term.get(name)
     <<timestamp::@ts_bits, _::bits>> = nonce
-    epoch = System.time_offset(:millisecond) - mono_epoch_offset
+    epoch = :erlang.time_offset(:millisecond) - mono_epoch_offset
     timestamp = timestamp + epoch
     DateTime.from_unix!(timestamp, :millisecond)
   end
@@ -455,7 +470,7 @@ defmodule NoNoncense do
   @compile {:inline, epoch_time: 1}
   # get millis since epoch
   # by adding the offset of the monotonic clock from the epoch to the current monotonic time
-  defp epoch_time(mono_epoch_offset), do: System.monotonic_time(:millisecond) + mono_epoch_offset
+  defp epoch_time(mono_epoch_offset), do: :erlang.monotonic_time(:millisecond) + mono_epoch_offset
 
   @compile {:inline, to_nonce_64: 3}
   defp to_nonce_64(timestamp, machine_id, count) do

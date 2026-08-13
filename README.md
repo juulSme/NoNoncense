@@ -36,31 +36,22 @@ Documentation can be found on [hexdocs.pm](https://hexdocs.pm/no_noncense/).
 
 ## Usage
 
-Note that `NoNoncense` is not a GenServer. Instead, it stores its initial state using `m::persistent_term` and its internal counter using `m::atomics`. Because `m::persistent_term` triggers a garbage collection cycle on writes, it is recommended to initialize your `NoNoncense` instance(s) at application start, when there is hardly any garbage to collect.
+Add `NoNoncense.MachineId` to your supervision tree. It acquires and renews a unique machine ID through a pluggable strategy and initializes your `NoNoncense` instances automatically. Startup blocks until the initial lease is acquired.
+
+For example, with [`SqlLease`](https://hexdocs.pm/no_noncense/NoNoncense.MachineId.Strategy.SqlLease.html) (after running its migration):
 
 ```elixir
-# lib/my_app/application.ex
-# generate a machine ID, start conflict guard and initialize a NoNoncense instance
-defmodule MyApp.Application do
-  use Application
-
-  def start(_type, _args) do
-    # grab your node_list from your application environment
-    machine_id = NoNoncense.MachineId.id!(node_list: [:"myapp@127.0.0.1"])
-    # base_key is required for encrypted nonces
-    :ok = NoNoncense.init(machine_id: machine_id, base_key: System.get_env("BASE_KEY"))
-
-    children =
-      [
-        # optional but recommended
-        {NoNoncense.MachineId.ConflictGuard, [machine_id: machine_id]}
-      ]
-
-    opts = [strategy: :one_for_one, name: MyApp.Supervisor]
-    Supervisor.start_link(children, opts)
-  end
-end
+children = [
+  MyApp.Repo,
+  {NoNoncense.MachineId,
+   strategy: NoNoncense.MachineId.Strategy.SqlLease,
+   strategy_opts: [repo: MyApp.Repo],
+   instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
+]
+Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
 ```
+
+See each strategy's module documentation for all configuration options.
 
 Then you can generate nonces.
 
@@ -81,6 +72,13 @@ iex> <<_::64>> = NoNoncense.encrypted_nonce(64)
 iex> <<_::96>> = NoNoncense.encrypted_nonce(96)
 iex> <<_::128>> = NoNoncense.encrypted_nonce(128)
 ```
+
+### Telemetry
+
+When the optional `:telemetry` dependency is available, NoNoncense emits events for machine ID
+lease acquisition, renewal, retries, loss, release, and conflict detection. Nonce generation is
+not instrumented. See [`NoNoncense.Telemetry`](https://hexdocs.pm/no_noncense/NoNoncense.Telemetry.html)
+for the event names, measurements, and metadata.
 
 ## Benchmarks
 

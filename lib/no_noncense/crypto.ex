@@ -13,8 +13,7 @@ defmodule NoNoncense.Crypto do
   }
 
   def init(opts) do
-    opts = Enum.into(opts, @base_opts)
-    %{base_key: base_key} = opts
+    opts = %{base_key: base_key} = Enum.into(opts, @base_opts)
 
     verify_base_key(base_key)
     opts |> Map.take([:cipher64, :cipher96, :cipher128]) |> Enum.each(&verify_speck_loaded/1)
