@@ -1,6 +1,7 @@
 defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
   use ExUnit.Case, async: true
   use Mimic
+  @moduletag :integration
 
   alias NoNoncense.MachineId.Strategy.RedisLease
 

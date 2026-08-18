@@ -50,20 +50,20 @@ jobs:
           - elixir: 1.15.x
             otp: 25.x
             os: windows-2022
-            command: mix test --exclude blowfish
+            command: mix test.unit --exclude blowfish
           - elixir: 1.20.x
             otp: 29.x
             os: windows-2022
-            command: mix test --exclude blowfish
+            command: mix test.unit --exclude blowfish
           # Apple crap
           - elixir: 1.15.x
             otp: 25.x
             os: macos-latest
-            command: mix test --exclude blowfish
+            command: mix test.unit --exclude blowfish
           - elixir: 1.20.x
             otp: 29.x
             os: macos-latest
-            command: mix test --exclude blowfish
+            command: mix test.unit --exclude blowfish
 
     steps:
       - name: Checkout code

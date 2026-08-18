@@ -2,6 +2,7 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
   use TestNoNoncense.DataCase, repo: :pg
   use Mimic
   import ExUnit.CaptureLog
+  @moduletag :integration
 
   alias NoNoncense.MachineId.Strategy.SqlLease
   alias SqlLease.NoNoncenseLease

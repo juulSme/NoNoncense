@@ -7,6 +7,7 @@ defmodule NoNoncense.MachineId.IntegrationTest do
   """
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
+  @moduletag :integration
 
   alias NoNoncense.MachineId
   alias NoNoncense.MachineId.LeaseManager

@@ -2,6 +2,7 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
   use TestNoNoncense.DataCase, repo: :mysql
   use Mimic
   import ExUnit.CaptureLog
+  @moduletag :integration
 
   alias NoNoncense.MachineId.Strategy.SqlLease
   alias SqlLease.NoNoncenseLease

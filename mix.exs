@@ -1,6 +1,10 @@
 defmodule NoNoncense.MixProject do
   use Mix.Project
 
+  def cli do
+    [preferred_envs: ["test.unit": :test]]
+  end
+
   def project do
     [
       app: :no_noncense,
