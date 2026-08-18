@@ -65,4 +65,22 @@ defmodule NoNoncense.MachineId.ConflictGuardTest do
 
     refute_receive :conflict, 50
   end
+
+  test "broadcasts the resolved machine ID from a getter" do
+    test_pid = self()
+    name = unique_name("conflict_guard")
+
+    guard =
+      Supervisor.child_spec(
+        {ConflictGuard,
+         name: name, machine_id: fn -> 0 end, on_conflict: fn -> send(test_pid, :conflict) end},
+        id: unique_name("getter_guard")
+      )
+
+    pid = start_supervised!(guard)
+
+    send(pid, {:nodeup, Node.self()})
+
+    assert_receive :conflict
+  end
 end

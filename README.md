@@ -25,7 +25,7 @@ The package is hosted on [hex.pm](https://hex.pm/packages/no_noncense) and can b
 ```elixir
 def deps do
   [
-    {:no_noncense, "~> 1.0"}
+    {:no_noncense, "~> 2.0"}
   ]
 end
 ```
