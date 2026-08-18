@@ -1,15 +1,11 @@
 defmodule NoNoncense.MixProject do
   use Mix.Project
 
-  def cli do
-    [preferred_envs: ["test.unit": :test]]
-  end
-
   def project do
     [
       app: :no_noncense,
       version: "0.0.0+development",
-      elixir: "~> 1.15",
+      elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: """
@@ -42,6 +38,10 @@ defmodule NoNoncense.MixProject do
     ]
   end
 
+  def cli do
+    [preferred_envs: ["test.unit": :test]]
+  end
+
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
@@ -70,8 +70,14 @@ defmodule NoNoncense.MixProject do
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      "test.unit": &test_unit/1,
       tidewave:
         "run --no-halt -e 'Agent.start(fn -> Bandit.start_link(plug: Tidewave, port: 4101) end)'"
     ]
+  end
+
+  defp test_unit(args) do
+    System.put_env("NO_NONCENSE_UNIT_TESTS", "true")
+    Mix.Tasks.Test.run(["--exclude", "integration" | args])
   end
 end
