@@ -130,6 +130,38 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
       assert LeaseManager.machine_id(name) == 12
     end
+
+    test "disables factories when a cached lease cannot be renewed" do
+      cache_name = unique_name("cache")
+      instance = unique_name("nonce")
+      test_pid = self()
+      start_supervised!({LeaseCache, name: cache_name})
+      LeaseCache.put(cache_name, %{machine_id: 12, lease: :cached, leased?: true})
+      NoNoncense.init(machine_id: 12, name: instance)
+
+      {:ok, agent} =
+        FakeStrategy.start_agent([{:error, :down}], [{:error, :retry, :unavailable}])
+
+      Process.flag(:trap_exit, true)
+
+      {result, _log} =
+        with_log(fn ->
+          LeaseManager.start_link(
+            name: unique_name("lm"),
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent],
+            lease_cache: cache_name,
+            instances: [[name: instance]],
+            acquire_timeout: 0,
+            on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
+          )
+        end)
+
+      assert {:error, :lease_acquisition_failed} = result
+      assert_receive {:lease_lost, :down}
+      assert LeaseCache.get(cache_name) == %{machine_id: nil, lease: nil, leased?: false}
+      assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
+    end
   end
 
   describe "renewal and loss" do

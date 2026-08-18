@@ -50,8 +50,8 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
         Logger.info("Lease of ID #{machine_id} acquired for #{div(ttl_ms, 1000)}s.")
         StateChange.on_renewed(%{state | machine_id: machine_id}, lease, ttl_ms)
 
-      _ ->
-        state
+      {:error, reason} ->
+        StateChange.on_lost(state, reason)
     end
   end
 
