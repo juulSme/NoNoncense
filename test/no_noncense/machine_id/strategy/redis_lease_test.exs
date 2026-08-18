@@ -35,6 +35,13 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:ok, 0, _, _} = RedisLease.acquire(10_000, opts)
     end
 
+    test "returns an error when the connection wrapper exits", fixtures do
+      with_connection = fn _fun -> exit(:pool_timeout) end
+      opts = Keyword.put(fixtures.opts, :with_connection, with_connection)
+
+      assert {:error, {:exit, :pool_timeout}} = RedisLease.acquire(10_000, opts)
+    end
+
     test "acquires the first unleased ID", fixtures do
       assert {:ok, 2} =
                Redix.command(fixtures.conn, [
@@ -181,6 +188,14 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:ok, ^current_lease, 10_000} =
                RedisLease.renew(current_lease, 10_000, fixtures.opts)
     end
+
+    test "reports a connection wrapper exit as retryable", fixtures do
+      with_connection = fn _fun -> exit(:pool_timeout) end
+      opts = Keyword.put(fixtures.opts, :with_connection, with_connection)
+
+      assert {:error, :retry, {:exit, :pool_timeout}} =
+               RedisLease.renew({0, "token"}, 10_000, opts)
+    end
   end
 
   describe "release/2" do
@@ -200,6 +215,13 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
 
       assert {:ok, ^current_token} =
                Redix.command(fixtures.conn, ["HGET", fixtures.key, "0"])
+    end
+
+    test "remains best-effort when the connection wrapper exits", fixtures do
+      with_connection = fn _fun -> exit(:pool_timeout) end
+      opts = Keyword.put(fixtures.opts, :with_connection, with_connection)
+
+      assert :ok = RedisLease.release({0, "token"}, opts)
     end
   end
 
