@@ -60,7 +60,7 @@ defmodule NoNoncense.MachineId do
   use Supervisor
 
   @type opt ::
-          {:name, Supervisor.name()}
+          {:name, module()}
           | {:strategy, module()}
           | {:strategy_opts, keyword()}
           | {:lease_duration, pos_integer()}

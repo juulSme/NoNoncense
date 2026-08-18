@@ -77,7 +77,7 @@ defmodule NoNoncense.MachineId.Strategy.HostIdentifiers do
 
   ## Examples / doctests
 
-      iex> MachineId.host_identifiers()
+      iex> host_identifiers()
       [:nonode@nohost, "host.mydomain.com", "10.11.12.13", "myhost", "fe80::1234::abcd"]
   """
   @spec host_identifiers() :: host_identifiers()

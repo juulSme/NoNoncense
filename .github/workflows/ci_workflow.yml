@@ -46,34 +46,19 @@ jobs:
             otp: 29.x
             os: ubuntu-latest
             command: mix test
-          # MS crap
-          - elixir: 1.16.x
-            otp: 25.x
-            os: windows-2022
-            command: mix test.unit --exclude blowfish
-          - elixir: 1.20.x
-            otp: 29.x
-            os: windows-2022
-            command: mix test.unit --exclude blowfish
-          # Apple crap
-          - elixir: 1.16.x
-            otp: 25.x
-            os: macos-latest
-            command: mix test.unit --exclude blowfish
-          - elixir: 1.20.x
-            otp: 29.x
-            os: macos-latest
-            command: mix test.unit --exclude blowfish
 
     steps:
-      - name: Checkout code
+      - &checkout
+        name: Checkout code
         uses: actions/checkout@v7
-      - uses: erlef/setup-beam@v1
+      - &setup-beam
+        uses: erlef/setup-beam@v1
         id: setup-beam
         with:
           otp-version: ${{ matrix.otp }}
           elixir-version: ${{ matrix.elixir }}
-      - name: Cache deps
+      - &cache-deps
+        name: Cache deps
         id: cache
         uses: actions/cache@v6
         with:
@@ -83,16 +68,19 @@ jobs:
           key: cache-v6-${{ matrix.os }}-${{steps.setup-beam.outputs.elixir-version}}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
             cache-v6-${{ matrix.os }}-${{steps.setup-beam.outputs.elixir-version}}-
-      - name: Install dependencies
+      - &install-dependencies
+        name: Install dependencies
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           mix deps.get
       - name: Check code formatting
         if: matrix.elixir == '1.20.x' && matrix.os == 'ubuntu-latest'
         run: mix format --check-formatted
-      - name: Compile dependencies
+      - &compile-dependencies
+        name: Compile dependencies
         run: mix deps.compile
-      - name: Compile code (warnings as errors)
+      - &compile-code
+        name: Compile code (warnings as errors)
         run: mix compile --warnings-as-errors
       - name: Run tests
         run: ${{ matrix.command }}
@@ -102,3 +90,37 @@ jobs:
       - name: Create docs
         if: matrix.elixir == '1.20.x' && matrix.os == 'ubuntu-latest'
         run: mix docs
+
+  test-unit:
+    runs-on: ${{ matrix.os }}
+    name: Elixir ${{ matrix.elixir }} OTP ${{ matrix.otp }} on ${{ matrix.os }}
+    env:
+      MIX_ENV: test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # MS crap
+          - elixir: 1.16.x
+            otp: 25.x
+            os: windows-2022
+          - elixir: 1.20.x
+            otp: 29.x
+            os: windows-2022
+          # Apple crap
+          - elixir: 1.16.x
+            otp: 25.x
+            os: macos-latest
+          - elixir: 1.20.x
+            otp: 29.x
+            os: macos-latest
+    steps:
+      - *checkout
+      - *setup-beam
+      - *cache-deps
+      - *install-dependencies
+      - *compile-dependencies
+      - *compile-code
+      - name: Run unit tests
+        run: mix test.unit --exclude blowfish

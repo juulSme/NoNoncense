@@ -2,7 +2,7 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   @moduledoc false
 
   alias NoNoncense.MachineId.LeaseCache
-  alias NoNoncense.MachineId.LeaseManager.{Backoff, StateChange}
+  alias NoNoncense.MachineId.LeaseManager.{Backoff, StateChange, Instances}
   alias NoNoncense.Telemetry
   require Logger
 
@@ -35,6 +35,7 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
 
       _ ->
         Logger.debug("Could not renew cached ID #{state.machine_id} lease.")
+        Instances.destroy_all(state.instances)
         StateChange.clear_lease(state)
     end
   end

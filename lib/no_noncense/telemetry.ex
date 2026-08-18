@@ -15,8 +15,9 @@ if Code.ensure_loaded?(:telemetry) do
 
       `[:no_noncense, :machine_id, :lease, operation, :stop]`
 
-    The `:start` event has no measurements. The `:stop` event includes `:duration` in native time
-    units and, for successful acquire and renew operations, `:ttl_ms`. Both events include
+    The `:start` event includes `:system_time` and `:monotonic_time` in native time units. The
+    `:stop` event includes `:duration` in native time units and, for successful acquire and renew
+    operations, `:ttl_ms`. Both events include
     `:strategy` and `:source` metadata. The `:stop` event additionally includes `:result`, one of
     `:ok`, `:error`, `:retry`, or `:lost`.
 
@@ -133,7 +134,7 @@ else
     @doc false
     def lease_retry(_, _, _, _), do: :ok
     @doc false
-    def lease_lost(_, _, _), do: :ok
+    def lease_lost(_, _), do: :ok
     @doc false
     def peer_checked(_), do: :ok
     @doc false

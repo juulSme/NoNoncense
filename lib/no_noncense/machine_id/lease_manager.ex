@@ -146,7 +146,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
         {:noreply, StateChange.on_lost(state, reason)}
 
       {:error, :retry, reason} ->
-        delay = Backoff.delay(state.attempt, 60 * 1000, state.renew_interval)
+        delay = Backoff.delay(state.attempt, 1000, state.renew_interval)
 
         Logger.warning("Lease renewal failed (retry in #{div(delay, 1000)}s): #{inspect(reason)}")
         Telemetry.lease_retry(:renew, state.attempt, delay, reason)
@@ -172,7 +172,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
         {:noreply, StateChange.on_renewed(%{state | machine_id: machine_id}, lease, ttl_ms)}
 
       {:error, reason} ->
-        delay = Backoff.delay(state.attempt, 100, state.renew_interval)
+        delay = Backoff.delay(state.attempt, 1000, state.renew_interval)
         Logger.warning("Reacquisition failed (retry in #{div(delay, 1000)}s): #{inspect(reason)}")
         Telemetry.lease_retry(:acquire, state.attempt, delay, reason)
 
