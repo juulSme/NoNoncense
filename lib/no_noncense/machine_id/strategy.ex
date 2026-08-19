@@ -23,7 +23,7 @@ defmodule NoNoncense.MachineId.Strategy do
 
   @doc "Acquire a new lease, returning the assigned machine ID and its actual validity period."
   @callback acquire(lease_duration :: pos_integer(), strategy_opts :: keyword()) ::
-              {:ok, machine_id :: non_neg_integer(), lease :: term(), ttl_ms :: pos_integer()}
+              {:ok, machine_id :: 0..511, lease :: term(), ttl_ms :: pos_integer()}
               | {:error, reason :: term()}
 
   @doc "Renew an existing lease, extending its validity period."
