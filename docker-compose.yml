@@ -18,7 +18,7 @@ services:
         condition: service_healthy
 
   mysql:
-    image: mysql:debian
+    image: mysql:9
     ports:
       - 3306:3306
     environment:

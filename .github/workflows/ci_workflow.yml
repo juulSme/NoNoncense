@@ -20,11 +20,15 @@ jobs:
         ports:
           - 5432:5432
       mysql:
-        image: mysql:debian
+        image: mysql:9
         env:
           MYSQL_ROOT_PASSWORD: supersecret
         ports:
           - 3306:3306
+      valkey:
+        image: valkey/valkey:9-alpine
+        ports:
+          - 6379:6379
 
     strategy:
       # https://hexdocs.pm/elixir/1.20/compatibility-and-deprecations.html#compatibility-between-elixir-and-erlang-otp
