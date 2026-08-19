@@ -5,7 +5,7 @@ defmodule NoNoncense.MixProject do
     [
       app: :no_noncense,
       version: "0.0.0+development",
-      elixir: "~> 1.15",
+      elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: """
@@ -22,9 +22,11 @@ defmodule NoNoncense.MixProject do
         source_ref: ~s(main),
         extras: ~w(./README.md ./CHANGELOG.md ./MIGRATION.md ./LICENSE.md),
         main: "NoNoncense",
-        skip_undefined_reference_warnings_on: ~w()
+        skip_undefined_reference_warnings_on: ~w(),
+        filter_modules: ~r(^Elixir\.NoNoncense\.?.*)
       ],
       test_ignore_filters: ["test/test_conflict_guard.ex"],
+      elixirc_paths: elixirc_paths(Mix.env()),
       aliases: aliases()
     ]
   end
@@ -36,23 +38,46 @@ defmodule NoNoncense.MixProject do
     ]
   end
 
+  def cli do
+    [preferred_envs: ["test.unit": :test]]
+  end
+
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:telemetry, "~> 1.0", optional: true},
+      {:speck_ex, "~> 0.1", optional: true},
+      {:ecto, "~> 3.0", optional: true},
+      {:ecto_sql, "~> 3.0", optional: true},
+      {:redix, "~> 1.0", optional: true},
       {:ex_doc, "~> 0.36", only: [:dev, :test], runtime: false},
       {:benchmark, github: "juulSme/benchmark_ex", only: [:dev, :test]},
       {:mimic, "~> 2.0", only: :test},
-      {:speck_ex, "~> 0.1", optional: true},
-      {:redix, "~> 1.0", optional: true, only: [:test]},
       {:tidewave, "~> 0.5", only: [:dev]},
-      {:bandit, "~> 1.0", only: [:dev]}
+      {:bandit, "~> 1.0", only: [:dev]},
+      {:postgrex, "~> 0.1", only: [:dev, :test]},
+      {:myxql, "~> 0.1", only: [:dev, :test]}
     ]
   end
 
+  defp elixirc_paths(:dev), do: ["lib", "test/support"]
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
   defp aliases do
     [
+      setup: ["deps.get", "ecto.setup"],
+      "ecto.setup": ["ecto.create", "ecto.migrate"],
+      "ecto.reset": ["ecto.drop", "ecto.setup"],
+      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      "test.unit": &test_unit/1,
       tidewave:
         "run --no-halt -e 'Agent.start(fn -> Bandit.start_link(plug: Tidewave, port: 4101) end)'"
     ]
+  end
+
+  defp test_unit(args) do
+    System.put_env("NO_NONCENSE_UNIT_TESTS", "true")
+    Mix.Tasks.Test.run(["--exclude", "integration" | args])
   end
 end

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0]
+
+- `NoNoncense.MachineId` is now a supervisor that can manage machine ID leases using several strategies based on MySQL / Postgres / Redis / Valkey coordination, or Kubernetes Statefulsets, or classic static node identifiers. NoNoncense can still be initialized directly using a static machine ID.
+- Add optional telemetry for machine ID lease management and conflict detection. See `NoNoncense.Telemetry` for the emitted events.
+- Drop support for Elixir 1.15, minimal supported version is now 1.16 (with OTP 25).
+- `NoNoncense` raises explicit `NoNoncense.Errors.DisabledError` and `NoNoncense.Errors.UninitializedError` when appropriate, instead of relying on the `:persistent_term.get/1` argument error.
+
 ## [1.3.1]
 
 - Use bitwise operations to process atomics

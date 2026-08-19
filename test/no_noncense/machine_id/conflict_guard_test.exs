@@ -1,73 +1,90 @@
 defmodule NoNoncense.MachineId.ConflictGuardTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
   import ExUnit.CaptureLog
 
-  alias NoNoncense.MachineId
-  alias MachineId.ConflictGuard
+  alias NoNoncense.MachineId.ConflictGuard
+
+  defp unique_name(prefix), do: :"#{prefix}_#{System.unique_integer([:positive, :monotonic])}"
 
   setup do
     test_pid = self()
-    config = [machine_id: 0, on_conflict: fn -> send(test_pid, :shut_down!) end]
-    [pid: start_link_supervised!({ConflictGuard, config})]
+
+    pid =
+      start_supervised!(
+        {ConflictGuard, machine_id: 0, on_conflict: fn -> send(test_pid, :conflict) end}
+      )
+
+    [pid: pid]
   end
 
-  defp expect_to_receive(message) do
-    receive do
-      received -> received
-    after
-      200 -> "no message"
-    end
-    |> case do
-      received -> assert received == message
-    end
+  test "ignores peers with a different machine ID", %{pid: pid} do
+    GenServer.cast(pid, {:id_from, :peer, %{machine_id: 1, init_at: 0}})
+
+    refute_receive :conflict, 50
   end
 
-  defp expect_log_message({res, msg}, expected_msg) do
-    assert msg =~ expected_msg
-    {res, msg}
+  test "does not act when an older node detects the conflict", %{pid: pid} do
+    init_at = :sys.get_state(pid).init_at
+
+    log =
+      capture_log(fn ->
+        GenServer.cast(pid, {:id_from, :peer, %{machine_id: 0, init_at: init_at + 1}})
+        refute_receive :conflict, 50
+      end)
+
+    assert log =~ "it will resolve the conflict"
   end
 
-  describe "handle_info({:nodeup, node})" do
-    test "calls the node's genserver with its own contact info and state", seeds do
-      # start conflictguard and send it the message that the current node is up
-      # this will of course be in conflict with itself
-      with_log(fn ->
-        send(seeds.pid, {:nodeup, Node.self()})
-        expect_to_receive(:shut_down!)
+  test "calls on_conflict when this node is newer than its conflicting peer", %{pid: pid} do
+    init_at = :sys.get_state(pid).init_at
+
+    log =
+      capture_log(fn ->
+        GenServer.cast(pid, {:id_from, :peer, %{machine_id: 0, init_at: init_at - 1}})
+        assert_receive :conflict
       end)
-      |> expect_log_message("I'm the newer node")
-    end
+
+    assert log =~ "this node will resolve the conflict"
   end
 
-  describe "handle_cast/2" do
-    test "does nothing if no ID conflict", seeds do
-      with_log(fn ->
-        GenServer.cast(seeds.pid, {:id_from, Node.self(), %{machine_id: 1, init_at: 0}})
-        expect_to_receive("no message")
-      end)
-      |> expect_log_message("machine ID 1 joined")
-    end
+  test "does not act while the machine ID getter returns nil" do
+    test_pid = self()
 
-    test "does nothing if oldest node with ID conflict", seeds do
-      with_log(fn ->
-        now = System.system_time(:millisecond)
-        # send a message from a newer machine, with a later init_at
-        GenServer.cast(seeds.pid, {:id_from, Node.self(), %{machine_id: 0, init_at: now + 20000}})
-        expect_to_receive("no message")
-      end)
-      |> expect_log_message("I was here first")
-      |> expect_log_message("[critical]")
-    end
+    guard =
+      Supervisor.child_spec(
+        {ConflictGuard,
+         name: unique_name("conflict_guard"),
+         machine_id: fn -> nil end,
+         on_conflict: fn -> send(test_pid, :conflict) end},
+        id: unique_name("nil_id_guard")
+      )
 
-    test "calls on_conflict callback", seeds do
-      with_log(fn ->
-        now = System.system_time(:millisecond)
-        # send a message from an older machine, with an earlier init_at
-        GenServer.cast(seeds.pid, {:id_from, Node.self(), %{machine_id: 0, init_at: now - 20000}})
-        expect_to_receive(:shut_down!)
+    pid = start_supervised!(guard)
+
+    GenServer.cast(pid, {:id_from, :peer, %{machine_id: 0, init_at: 0}})
+
+    refute_receive :conflict, 50
+  end
+
+  test "broadcasts the resolved machine ID from a getter" do
+    test_pid = self()
+    name = unique_name("conflict_guard")
+
+    guard =
+      Supervisor.child_spec(
+        {ConflictGuard,
+         name: name, machine_id: fn -> 0 end, on_conflict: fn -> send(test_pid, :conflict) end},
+        id: unique_name("getter_guard")
+      )
+
+    pid = start_supervised!(guard)
+
+    log =
+      capture_log(fn ->
+        send(pid, {:nodeup, Node.self()})
+        assert_receive :conflict
       end)
-      |> expect_log_message("taking evasive action!")
-      |> expect_log_message("[critical]")
-    end
+
+    assert log =~ "this node will resolve the conflict"
   end
 end

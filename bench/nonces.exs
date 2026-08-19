@@ -25,11 +25,11 @@ NoNoncense.init(
   cipher96: :des3
 )
 
-# artifially set back the clock, so that 64-bit nonces don't hit their time-based rate limit
-config = :persistent_term.get(NoNoncense)
-state(init_at: init_at) = config
+# Set the 64-bit counter's encoded timestamp back, so it does not reach the current clock during
+# the benchmark and trigger the time-based rate limit.
+state(counters_ref: counters) = :persistent_term.get(NoNoncense)
 ten_days = 10 * 24 * 60 * 60 * 1000
-:persistent_term.put(NoNoncense, state(config, init_at: init_at - ten_days))
+:atomics.add_get(counters, 1, -ten_days * 2 ** 13)
 
 Process.sleep(1000)
 

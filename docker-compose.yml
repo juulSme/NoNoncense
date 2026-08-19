@@ -5,3 +5,31 @@ services:
     command: valkey-server --save "" --appendonly no
     ports:
       - 6379:6379
+
+  postgres:
+    image: postgres:17-alpine
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_PASSWORD: supersecret
+      POSTGRES_DB: no_noncense
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:9
+    ports:
+      - 3306:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: supersecret
+      MYSQL_DATABASE: no_noncense
+    healthcheck:
+      test:
+        - CMD
+        - mysqladmin
+        - ping
+        - -p$$MYSQL_ROOT_PASSWORD
+      timeout: 1s
+      retries: 30
+      interval: 1s
