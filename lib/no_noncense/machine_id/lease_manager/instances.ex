@@ -13,8 +13,14 @@ defmodule NoNoncense.MachineId.LeaseManager.Instances do
     machine_id = Keyword.fetch!(opts, :machine_id)
 
     case :persistent_term.get(name, nil) do
-      state(machine_id: ^machine_id) -> :ok
-      _ -> NoNoncense.init(opts)
+      state(machine_id: ^machine_id, enabled?: true) ->
+        :ok
+
+      state(machine_id: ^machine_id, enabled?: false) = state ->
+        :persistent_term.put(name, state(state, enabled?: true))
+
+      _ ->
+        NoNoncense.init(opts)
     end
   end
 
@@ -23,12 +29,17 @@ defmodule NoNoncense.MachineId.LeaseManager.Instances do
   def re_init_all(all_opts), do: for(opts <- all_opts, do: re_init(opts))
 
   @doc "Erases an instance so it can no longer generate nonces."
-  @spec destroy(instance_opts()) :: boolean()
-  def destroy(opts) do
-    Keyword.fetch!(opts, :name) |> :persistent_term.erase()
+  @spec disable(instance_opts()) :: :ok
+  def disable(opts) do
+    name = Keyword.fetch!(opts, :name)
+
+    case :persistent_term.get(name, nil) do
+      nil -> :ok
+      state -> :persistent_term.put(name, state(state, enabled?: false))
+    end
   end
 
   @doc "Erases every configured factory."
-  @spec destroy_all([instance_opts()]) :: [boolean()]
-  def destroy_all(all_opts), do: for(opts <- all_opts, do: destroy(opts))
+  @spec disable_all([instance_opts()]) :: [:ok]
+  def disable_all(all_opts), do: for(opts <- all_opts, do: disable(opts))
 end

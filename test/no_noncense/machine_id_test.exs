@@ -176,7 +176,7 @@ defmodule NoNoncense.MachineIdTest do
         end)
 
       assert log =~ "Lease of ID 3 lost: :stolen"
-      assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
       send(machine_id.lease_manager, :resume_reacquisition)
 
       assert_eventually(fn ->

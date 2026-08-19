@@ -6,6 +6,7 @@ defmodule NoNoncense.State do
   The internal state of a NoNoncense instance as initialized by `NoNoncense.init/1`.
   """
   Record.defrecord(:state, [
+    :enabled?,
     :machine_id,
     :init_at,
     :mono_epoch_offset,

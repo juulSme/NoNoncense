@@ -278,7 +278,9 @@ defmodule NoNoncenseTest do
     end
 
     test "raises an error if the nonce factory has not been initialized" do
-      assert_raise ArgumentError, fn -> NoNoncense.nonce(:not_initialized, 64) end
+      assert_raise NoNoncense.Errors.UninitializedError, fn ->
+        NoNoncense.nonce(:not_initialized, 64)
+      end
     end
 
     test "count wraps and timestamp increases on cycle limit wrap" do

@@ -55,7 +55,7 @@ defmodule NoNoncense.MachineId.IntegrationTest do
   defp assert_eventually(assertion, attempts) do
     assertion.()
   rescue
-    _error in [ExUnit.AssertionError, ArgumentError] ->
+    _error in [ExUnit.AssertionError, NoNoncense.Errors.DisabledError] ->
       Process.sleep(10)
       assert_eventually(assertion, attempts - 1)
   end

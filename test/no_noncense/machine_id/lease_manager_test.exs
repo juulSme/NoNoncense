@@ -182,7 +182,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       assert {:error, :lease_acquisition_failed} = result
       assert_receive {:lease_lost, :timeout}
       assert LeaseCache.get(cache_name) == %{machine_id: nil, lease: nil, leased?: false}
-      assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
     end
   end
 
@@ -261,7 +261,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         end)
 
       assert log =~ "Lease of ID 3 lost: :stolen"
-      assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
       send(name, :resume_reacquisition)
       assert_receive {:acquire, {:ok, 4, :lease2, 100_000}}
       assert LeaseManager.machine_id(name) == 4
@@ -307,7 +307,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         assert_receive {:lease_lost, :conflict}
       end)
 
-      assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
       refute_receive {:acquire, _}, 20
       assert %{leased?: false, timers: timers} = :sys.get_state(name)
       refute Map.has_key?(timers, :reacquire)
@@ -335,7 +335,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         capture_log(fn ->
           task = Task.async(fn -> LeaseManager.lease_lost(name) end)
           assert_receive {:lease_lost, :external}
-          assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
+          assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
           send(name, :resume_reacquisition)
           assert :ok = Task.await(task)
         end)
@@ -386,15 +386,24 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
   end
 
   describe "shutdown" do
-    test "releases a currently held lease" do
+    test "disables factories before releasing a currently held lease" do
+      instance = unique_name("nonce")
+
       {:ok, agent} =
         FakeStrategy.start_agent([{:ok, 3, :lease1, 100_000}], [{:ok, :lease1, 100_000}])
 
-      start_lease_manager!(strategy: FakeStrategy, strategy_opts: [agent: agent, notify: self()])
+      start_lease_manager!(
+        strategy: FakeStrategy,
+        strategy_opts: [agent: agent, notify: self()],
+        instances: [[name: instance]]
+      )
+
+      assert <<_::64>> = NoNoncense.nonce(instance, 64)
 
       stop_supervised!(LeaseManager)
 
       assert_receive {:release, :lease1}
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
     end
   end
 end

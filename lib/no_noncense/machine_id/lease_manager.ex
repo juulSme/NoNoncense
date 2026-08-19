@@ -43,6 +43,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
   """
   use GenServer
   use NoNoncense.Constants
+  alias NoNoncense.MachineId.LeaseManager.Instances
   alias NoNoncense.MachineId.LeaseManager.{Backoff, Bootstrap, Timers, StateChange}
   alias NoNoncense.Telemetry
   require Logger
@@ -187,8 +188,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
   @impl true
   def terminate(_reason, state) do
     if state.leased? do
-      # cache / instances cleanup, updated state is ignored
-      StateChange.cleanup(state)
+      Instances.disable_all(state.instances)
 
       fn -> state.strategy.release(state.lease, state.strategy_opts) end
       |> Telemetry.lease_operation(:release, %{strategy: state.strategy, source: :shutdown})

@@ -108,17 +108,17 @@ defmodule NoNoncense.MachineId.ConflictGuard do
 
       machine_id != others_id ->
         Logger.debug("Node #{node} with machine ID #{others_id} joined")
-        Telemetry.peer_checked(:conflict)
+        Telemetry.peer_checked(:match)
 
       state.init_at >= others_init_at ->
         Logger.critical("Node #{node} has a conflicting ID; this node will resolve the conflict")
-        Telemetry.peer_checked(:match)
+        Telemetry.peer_checked(:conflict)
         Telemetry.conflict(:local_node)
         state.on_conflict.()
 
       true ->
         Logger.critical("Node #{node} has a conflicting ID; it will resolve the conflict")
-        Telemetry.peer_checked(:match)
+        Telemetry.peer_checked(:conflict)
         Telemetry.conflict(:remote_node)
     end
 

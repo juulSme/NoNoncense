@@ -86,7 +86,7 @@ defmodule NoNoncense do
 
   Nonces are guaranteed to be unique **if and only if**:
   - You use one instance and one nonce type. Only use separate instances for separate purposes (database IDs and encryption IVs, for example).
-  - Machine IDs are unique for each node (`NoNoncense.MachineId` handles this automatically; `NoNoncense.MachineId.ConflictGuard` adds an extra safeguard against split-brain).
+  - Machine IDs are unique for each node (`NoNoncense.MachineId` handles this automatically if configured correctly).
   - Nodes maintain a somewhat accurate clock (specifically, the UTC clock must progress between node restarts).
   - **Sortable nonces only:** the machine clock has to be accurate.
   - **Encrypted nonces only:** the cipher and key must not be changed.
@@ -267,7 +267,8 @@ defmodule NoNoncense do
         enc128: e128,
         dec64: d64,
         dec96: d96,
-        dec128: d128
+        dec128: d128,
+        enabled?: true
       )
 
     :ok = :persistent_term.put(name, state)
@@ -288,8 +289,7 @@ defmodule NoNoncense do
       <<101, 6, 25, 181, 192, 128, 32, 0, 0, 0, 0, 0, 0, 0, 0, 19>>
   """
   @spec nonce(atom(), nonce_size()) :: nonce()
-  def nonce(name \\ __MODULE__, bit_size)
-  def nonce(name, bit_size), do: :persistent_term.get(name) |> gen_ctr_nonce(bit_size)
+  def nonce(name \\ __MODULE__, bit_size), do: fetch_config(name) |> gen_ctr_nonce(bit_size)
 
   defp gen_ctr_nonce(config, 64) do
     state(machine_id: machine_id, mono_epoch_offset: me_offset, counters_ref: counters) = config
@@ -351,12 +351,12 @@ defmodule NoNoncense do
   def encrypted_nonce(name \\ __MODULE__, bit_size, base_type \\ :counter)
 
   def encrypted_nonce(name, bit_size, base_type) when bit_size in [64, 128] do
-    config = :persistent_term.get(name)
+    config = fetch_config(name)
     gen_base_nonce(config, base_type, bit_size) |> crypt(config, true, bit_size)
   end
 
   def encrypted_nonce(name, 96, base_type) do
-    config = :persistent_term.get(name)
+    config = fetch_config(name)
     state(cipher96: cipher, enc96: e96, dec96: d96) = config
 
     if cipher == :speck do
@@ -379,13 +379,13 @@ defmodule NoNoncense do
       iex> ^plaintext = plaintext |> NoNoncense.encrypt() |> NoNoncense.decrypt()
   """
   @spec encrypt(atom, nonce()) :: nonce()
-  def encrypt(name \\ __MODULE__, nonce), do: crypt(nonce, :persistent_term.get(name), true)
+  def encrypt(name \\ __MODULE__, nonce), do: crypt(nonce, fetch_config(name), true)
 
   @doc """
   Decrypt a nonce. Only use this function to decrypt NoNoncense nonces. See `encrypt/2`.
   """
   @spec decrypt(atom, nonce()) :: nonce()
-  def decrypt(name \\ __MODULE__, nonce), do: crypt(nonce, :persistent_term.get(name), false)
+  def decrypt(name \\ __MODULE__, nonce), do: crypt(nonce, fetch_config(name), false)
 
   @doc """
   Generate a nonce that is sortable by generation time, like a Snowflake ID. The first 42 bits contain the timestamp.
@@ -402,8 +402,9 @@ defmodule NoNoncense do
       <<0, 15, 27, 217, 161, 128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>
   """
   @spec sortable_nonce(atom(), nonce_size()) :: nonce()
-  def sortable_nonce(name \\ __MODULE__, bit_size)
-  def sortable_nonce(name, bit_size), do: :persistent_term.get(name) |> gen_srt_nonce(bit_size)
+  def sortable_nonce(name \\ __MODULE__, bit_size) do
+    fetch_config(name) |> gen_srt_nonce(bit_size)
+  end
 
   defp gen_srt_nonce(cfg, bit_size) when bit_size in [64, 96, 128] do
     state(machine_id: machine_id, mono_epoch_offset: me_offset, counters_ref: counters) = cfg
@@ -450,7 +451,7 @@ defmodule NoNoncense do
   """
   @spec get_datetime(atom(), nonce()) :: DateTime.t()
   def get_datetime(name \\ __MODULE__, nonce) do
-    state(mono_epoch_offset: mono_epoch_offset) = :persistent_term.get(name)
+    state(mono_epoch_offset: mono_epoch_offset) = fetch_config(name)
     <<timestamp::@ts_bits, _::bits>> = nonce
     epoch = :erlang.time_offset(:millisecond) - mono_epoch_offset
     timestamp = timestamp + epoch
@@ -512,4 +513,12 @@ defmodule NoNoncense do
   defp crypt(nonce, state(cipher128: c128, enc128: enc128, dec128: dec128), encrypt?, 128) do
     Crypto.crypt(nonce, c128, enc128, dec128, encrypt?)
   end
+
+  @compile {:inline, fetch_config: 1}
+  defp fetch_config(name), do: :persistent_term.get(name, nil) |> must_be_enabled(name)
+
+  defp must_be_enabled(state, name)
+  defp must_be_enabled(state(enabled?: true) = state, _), do: state
+  defp must_be_enabled(nil, name), do: raise(NoNoncense.Errors.UninitializedError, name)
+  defp must_be_enabled(_, name), do: raise(NoNoncense.Errors.DisabledError, name)
 end
