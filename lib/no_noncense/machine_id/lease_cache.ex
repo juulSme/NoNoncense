@@ -6,7 +6,7 @@ defmodule NoNoncense.MachineId.LeaseCache do
   In that case, the lease manager will be restarted, can fetch the existing lease from the cache and attempt to renew it.
   This way, the lease manager does not have to request a new lease, protecting against ID exhaustion, of which there are only 512 after all.
 
-  Since this is an in-memory cache, it will not protect against node crashes or, notable, external forced kills by the kernel or the scheduler (for example in OOM scenarios).
+  Since this is an in-memory cache, it will not protect against node crashes or, notably, external forced kills by the kernel or the scheduler (for example in OOM scenarios).
   """
   use Agent
 

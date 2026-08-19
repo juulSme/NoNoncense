@@ -79,8 +79,12 @@ defmodule NoNoncense.MachineId.ConflictGuardTest do
 
     pid = start_supervised!(guard)
 
-    send(pid, {:nodeup, Node.self()})
+    log =
+      capture_log(fn ->
+        send(pid, {:nodeup, Node.self()})
+        assert_receive :conflict
+      end)
 
-    assert_receive :conflict
+    assert log =~ "this node will resolve the conflict"
   end
 end

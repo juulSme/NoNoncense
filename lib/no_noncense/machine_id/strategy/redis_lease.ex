@@ -56,12 +56,10 @@ if Code.ensure_loaded?(Redix) do
 
     @type with_connection :: ((Redix.connection() -> any()) -> any()) | Redix.connection()
     @type opt :: {:with_connection, with_connection()} | {:key, binary()}
-    @type opts :: [opt()]
 
     @default_key "no_noncense_leases"
     @all_ids Enum.to_list(0..511)
 
-    @doc "Claims the lowest available machine ID in the configured Redis hash."
     @impl true
     def acquire(lease_duration, opts) do
       {with_conn, key} = process_opts(opts)
@@ -85,7 +83,6 @@ if Code.ensure_loaded?(Redix) do
       end
     end
 
-    @doc "Extends a lease only when its machine ID and ownership token are still present."
     @impl true
     def renew(lease = {id, token}, lease_duration, opts) do
       {with_conn, key} = process_opts(opts)
@@ -100,7 +97,6 @@ if Code.ensure_loaded?(Redix) do
       end
     end
 
-    @doc "Best-effort deletes a lease only when its ownership token still matches."
     @impl true
     def release(_lease = {id, token}, opts) do
       {with_conn, key} = process_opts(opts)
@@ -108,6 +104,9 @@ if Code.ensure_loaded?(Redix) do
       with_conn.(&Redix.command(&1, cmd))
       :ok
     end
+
+    @impl true
+    def deterministic?(), do: false
 
     ###########
     # Private #

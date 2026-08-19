@@ -58,8 +58,6 @@ defmodule NoNoncense.MachineId.LeaseManager do
           | {:instances, [NoNoncense.init_opt()]}
           | {:lease_cache, GenServer.name()}
 
-  @type opts :: [opt()]
-
   @default_state %{
     name: __MODULE__,
     strategy: nil,
@@ -88,7 +86,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
 
   #{@options_docs}
   """
-  @spec start_link(opts()) :: GenServer.on_start()
+  @spec start_link([opt()]) :: GenServer.on_start()
   def start_link(opts) do
     opts = Enum.into(opts, @default_state)
     # init/1 blocks while acquiring; the default 5s GenServer init timeout must not apply
@@ -100,8 +98,9 @@ defmodule NoNoncense.MachineId.LeaseManager do
   def machine_id(name \\ __MODULE__), do: GenServer.call(name, :machine_id)
 
   @doc "Signal to the lease manager that the lease was lost because of some external reason"
-  @spec lease_lost(GenServer.name()) :: :ok
-  def lease_lost(name \\ __MODULE__), do: GenServer.call(name, :lease_lost)
+  @spec lease_lost(GenServer.name(), atom()) :: :ok
+  def lease_lost(name \\ __MODULE__, reason \\ :external),
+    do: GenServer.call(name, {:lease_lost, reason})
 
   ##########
   # Server #
@@ -121,8 +120,8 @@ defmodule NoNoncense.MachineId.LeaseManager do
   @impl true
   def handle_call(:machine_id, _from, state), do: {:reply, state.machine_id, state}
 
-  def handle_call(:lease_lost, _from, state) do
-    {:reply, :ok, StateChange.on_lost(state, :external)}
+  def handle_call({:lease_lost, reason}, _from, state) do
+    {:reply, :ok, StateChange.on_lost(state, reason)}
   end
 
   def handle_call(msg, _from, state), do: unknown_message(:handle_call, msg, state)
@@ -139,7 +138,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
     |> Telemetry.lease_operation(:renew, %{strategy: state.strategy, source: :scheduled})
     |> case do
       {:ok, lease, ttl_ms} ->
-        Logger.debug("Lease of ID #{state.machine_id} renewed for #{div(ttl_ms, 1000)}s.")
+        Logger.debug("Lease of ID #{state.machine_id} renewed for #{ttl_ms}ms.")
         {:noreply, StateChange.on_renewed(state, lease, ttl_ms)}
 
       {:error, :lost, reason} ->
@@ -148,7 +147,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
       {:error, :retry, reason} ->
         delay = Backoff.delay(state.attempt, 1000, state.renew_interval)
 
-        Logger.warning("Lease renewal failed (retry in #{div(delay, 1000)}s): #{inspect(reason)}")
+        Logger.warning("Lease renewal failed (retry in #{delay}ms): #{inspect(reason)}")
         Telemetry.lease_retry(:renew, state.attempt, delay, reason)
 
         state
@@ -169,11 +168,12 @@ defmodule NoNoncense.MachineId.LeaseManager do
     |> Telemetry.lease_operation(:acquire, %{strategy: state.strategy, source: :reacquire})
     |> case do
       {:ok, machine_id, lease, ttl_ms} ->
+        Logger.info("Lease reacquired; new ID is #{machine_id}, valid for #{ttl_ms}ms")
         {:noreply, StateChange.on_renewed(%{state | machine_id: machine_id}, lease, ttl_ms)}
 
       {:error, reason} ->
         delay = Backoff.delay(state.attempt, 1000, state.renew_interval)
-        Logger.warning("Reacquisition failed (retry in #{div(delay, 1000)}s): #{inspect(reason)}")
+        Logger.warning("Reacquisition failed (retry in #{delay}ms): #{inspect(reason)}")
         Telemetry.lease_retry(:acquire, state.attempt, delay, reason)
 
         state
@@ -187,11 +187,14 @@ defmodule NoNoncense.MachineId.LeaseManager do
   @impl true
   def terminate(_reason, state) do
     if state.leased? do
+      # cache / instances cleanup, updated state is ignored
+      StateChange.cleanup(state)
+
       fn -> state.strategy.release(state.lease, state.strategy_opts) end
       |> Telemetry.lease_operation(:release, %{strategy: state.strategy, source: :shutdown})
     end
 
-    Logger.info("Lease released.")
+    Logger.info("Lease of ID #{state.machine_id} released.")
     :ok
   end
 

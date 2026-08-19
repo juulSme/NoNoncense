@@ -36,8 +36,8 @@ defmodule NoNoncense.MachineId.ConflictGuard do
        strategy: NoNoncense.MachineId.Strategy.HostIdentifiers,
        instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
 
-  When started manually, supply `:machine_id` or `:lease_manager` to resolve the ID, and
-  `:on_conflict` to override the default halt behaviour.
+  When started manually, supply `:machine_id` to resolve the ID,
+  and `:on_conflict` to override the default halt behaviour.
   """
   use GenServer
   alias NoNoncense.Telemetry
@@ -48,10 +48,8 @@ defmodule NoNoncense.MachineId.ConflictGuard do
           | {:on_conflict, (-> any())}
           | {:machine_id, integer() | (-> integer())}
 
-  @type opts :: [opt()]
-
   @doc "Starts the conflict guard."
-  @spec start_link(opts()) :: GenServer.on_start()
+  @spec start_link([opt()]) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = opts[:name] || __MODULE__
     on_conflict = opts[:on_conflict] || fn -> :erlang.halt(111) end
@@ -106,11 +104,11 @@ defmodule NoNoncense.MachineId.ConflictGuard do
     cond do
       is_nil(machine_id) ->
         Logger.debug("Node #{node} joined but this node has no machine ID to compare with")
-        Telemetry.peer_checked(:local_id_unavailable)
+        Telemetry.peer_checked(:no_local_id)
 
       machine_id != others_id ->
         Logger.debug("Node #{node} with machine ID #{others_id} joined")
-        Telemetry.peer_checked(:different)
+        Telemetry.peer_checked(:conflict)
 
       state.init_at >= others_init_at ->
         Logger.critical("Node #{node} has a conflicting ID; this node will resolve the conflict")

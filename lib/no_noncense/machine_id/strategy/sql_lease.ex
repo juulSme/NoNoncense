@@ -1,4 +1,4 @@
-if Code.ensure_loaded?(Ecto) do
+if Code.ensure_loaded?(Ecto.Migration) do
   defmodule NoNoncense.MachineId.Strategy.SqlLease do
     @moduledoc """
     Strategy to acquire a machine ID lease from a SQL database (Postgres or MySQL), coordinating
@@ -64,7 +64,6 @@ if Code.ensure_loaded?(Ecto) do
     use NoNoncense.MachineId.Strategy
 
     @type opt :: {:table, String.t()} | {:repo, module()}
-    @type opts :: [opt()]
     @type migrate_opt :: {:table_name, String.t()}
 
     @default_table_name "no_noncense_leases"
@@ -76,7 +75,6 @@ if Code.ensure_loaded?(Ecto) do
       quote do: datetime_add(db_now(), unquote(duration_ms), "millisecond")
     end
 
-    @doc "Claims the lowest currently expired lease row from the configured database table."
     @impl true
     def acquire(lease_duration, opts) do
       {repo, table} = process_opts(opts)
@@ -117,7 +115,6 @@ if Code.ensure_loaded?(Ecto) do
       end
     end
 
-    @doc "Extends a lease only when its ownership token still matches the lease row."
     @impl true
     def renew({id, token}, lease_duration, opts) do
       {repo, table} = process_opts(opts)
@@ -134,7 +131,6 @@ if Code.ensure_loaded?(Ecto) do
       end
     end
 
-    @doc "Best-effort expires a lease only when its ownership token still matches the lease row."
     @impl true
     def release(_lease = {id, token}, opts) do
       {repo, table} = process_opts(opts)
@@ -147,6 +143,9 @@ if Code.ensure_loaded?(Ecto) do
 
       :ok
     end
+
+    @impl true
+    def deterministic?(), do: false
 
     @doc """
     Convenience helper for creating the leases table in an Ecto migration.

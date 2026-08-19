@@ -19,6 +19,9 @@ defmodule NoNoncense.MachineIdTest do
     @impl true
     def release(_, _), do: :ok
 
+    @impl true
+    def deterministic?(), do: false
+
     defp pop(agent, key) do
       Agent.get_and_update(agent, fn state ->
         case Map.fetch!(state, key) do
@@ -172,7 +175,7 @@ defmodule NoNoncense.MachineIdTest do
           assert_receive {:lease_lost, :stolen}
         end)
 
-      assert log =~ "Lease lost: :stolen"
+      assert log =~ "Lease of ID 3 lost: :stolen"
       assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
       send(machine_id.lease_manager, :resume_reacquisition)
 

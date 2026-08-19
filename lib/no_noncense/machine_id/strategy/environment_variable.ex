@@ -20,12 +20,10 @@ defmodule NoNoncense.MachineId.Strategy.EnvironmentVariable do
         {NoNoncense.MachineId,
          strategy: NoNoncense.MachineId.Strategy.EnvironmentVariable,
          strategy_opts: [variable_name: "POD_NAME"],
-         on_lease_lost: fn _reason -> :erlang.halt(111) end,
          instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
       ]
 
-  The default `ConflictGuard` detects duplicate IDs among connected Erlang nodes. Halting on
-  lease loss prevents this deterministic strategy from reacquiring the same conflicting ID.
+  The default `ConflictGuard` detects duplicate IDs among connected Erlang nodes.
 
   This strategy is suitable only when every nonce-generating pod has a globally unique numeric
   suffix. A single StatefulSet provides that property, but separate StatefulSets reuse their
@@ -42,9 +40,7 @@ defmodule NoNoncense.MachineId.Strategy.EnvironmentVariable do
   use NoNoncense.MachineId.Strategy
 
   @type opt :: {:variable_name, String.t()}
-  @type opts :: [opt]
 
-  @doc "Reads the configured environment variable and uses its numeric suffix as the machine ID."
   @impl true
   def acquire(lease_duration, opts) do
     env_var = Keyword.fetch!(opts, :variable_name)

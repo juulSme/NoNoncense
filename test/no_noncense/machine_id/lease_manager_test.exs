@@ -30,6 +30,9 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       :ok
     end
 
+    @impl true
+    def deterministic?(), do: false
+
     defp pop(agent, key) do
       Agent.get_and_update(agent, fn state ->
         case Map.fetch!(state, key) do
@@ -92,6 +95,25 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         end)
 
       assert {:error, :lease_acquisition_failed} = result
+    end
+
+    test "does not retry acquisition after the deadline" do
+      {:ok, agent} = FakeStrategy.start_agent([{:error, :down}], [{:ok, :lease, 100_000}])
+      Process.flag(:trap_exit, true)
+
+      {result, _log} =
+        with_log(fn ->
+          LeaseManager.start_link(
+            name: unique_name("lm"),
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: self()],
+            acquire_timeout: 50
+          )
+        end)
+
+      assert {:error, :lease_acquisition_failed} = result
+      assert_receive {:acquire, {:error, :down}}
+      refute_receive {:acquire, _}, 20
     end
 
     test "treats a granted TTL below the minimum as an immediate loss" do
@@ -158,7 +180,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         end)
 
       assert {:error, :lease_acquisition_failed} = result
-      assert_receive {:lease_lost, :down}
+      assert_receive {:lease_lost, :timeout}
       assert LeaseCache.get(cache_name) == %{machine_id: nil, lease: nil, leased?: false}
       assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
     end
@@ -238,12 +260,57 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
           assert_receive {:lease_lost, :stolen}
         end)
 
-      assert log =~ "Lease lost: :stolen"
+      assert log =~ "Lease of ID 3 lost: :stolen"
       assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
       send(name, :resume_reacquisition)
       assert_receive {:acquire, {:ok, 4, :lease2, 100_000}}
       assert LeaseManager.machine_id(name) == 4
       assert <<_::64>> = NoNoncense.nonce(instance, 64)
+    end
+
+    defmodule DeterministicFakeStrategy do
+      @behaviour NoNoncense.MachineId.Strategy
+
+      defdelegate start_agent(acquire, renew), to: FakeStrategy
+      @impl true
+      defdelegate acquire(lease_duration, opts), to: FakeStrategy
+      @impl true
+      defdelegate renew(lease, lease_duration, opts), to: FakeStrategy
+      @impl true
+      defdelegate release(lease, opts), to: FakeStrategy
+      @impl true
+      def deterministic?(), do: true
+    end
+
+    test "does not reacquire after confirmed loss for a deterministic strategy" do
+      instance = unique_name("nonce")
+
+      {:ok, agent} =
+        DeterministicFakeStrategy.start_agent(
+          [{:ok, 3, :lease1, 100_000}],
+          [{:error, :lost, :conflict}]
+        )
+
+      name =
+        start_lease_manager!(
+          strategy: DeterministicFakeStrategy,
+          strategy_opts: [agent: agent, notify: self()],
+          instances: [[name: instance]]
+        )
+
+      assert_receive {:acquire, {:ok, 3, :lease1, 100_000}}
+      assert <<_::64>> = NoNoncense.nonce(instance, 64)
+
+      capture_log(fn ->
+        renew(name)
+        assert_receive {:renew, {:error, :lost, :conflict}}
+        assert_receive {:lease_lost, :conflict}
+      end)
+
+      assert_raise ArgumentError, fn -> NoNoncense.nonce(instance, 64) end
+      refute_receive {:acquire, _}, 20
+      assert %{leased?: false, timers: timers} = :sys.get_state(name)
+      refute Map.has_key?(timers, :reacquire)
     end
 
     test "handles externally signalled loss through the same lifecycle" do
@@ -273,7 +340,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
           assert :ok = Task.await(task)
         end)
 
-      assert log =~ "Lease lost: :external"
+      assert log =~ "Lease of ID 3 lost: :external"
     end
   end
 

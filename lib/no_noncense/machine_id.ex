@@ -70,8 +70,6 @@ defmodule NoNoncense.MachineId do
           | {:instances, [NoNoncense.init_opt()]}
           | {:enable_conflict_guard?, boolean()}
 
-  @type opts :: [opt()]
-
   @doc """
   Starts the machine ID supervisor, blocking until the initial lease is acquired.
 
@@ -79,7 +77,7 @@ defmodule NoNoncense.MachineId do
 
   #{@options_docs}
   """
-  @spec start_link(opts()) :: Supervisor.on_start()
+  @spec start_link([opt()]) :: Supervisor.on_start()
   def start_link(opts) do
     name = opts[:name] || __MODULE__
     Supervisor.start_link(__MODULE__, opts, name: name)
@@ -92,31 +90,31 @@ defmodule NoNoncense.MachineId do
     # LeaseCache
     cache_name = Module.concat(name, :LeaseCache)
     cache_opts = [name: cache_name]
-    cache = {LeaseCache, cache_opts}
+    lease_cache = {LeaseCache, cache_opts}
 
     # LeaseManager
-    lease_manager_name = Module.concat(name, :LeaseManager)
+    lm_name = Module.concat(name, :LeaseManager)
     instances = Keyword.fetch!(opts, :instances)
     instances = Enum.map(instances, &Keyword.put_new(&1, :name, NoNoncense))
 
-    lease_manager_opts =
+    lm_opts =
       opts
       |> Keyword.drop([:enable_conflict_guard?])
-      |> Keyword.merge(name: lease_manager_name, instances: instances, lease_cache: cache_name)
+      |> Keyword.merge(name: lm_name, instances: instances, lease_cache: cache_name)
 
-    lease_manager = {LeaseManager, lease_manager_opts}
+    lease_manager = {LeaseManager, lm_opts}
 
     # ConflictGuard
     enable_cg? = Keyword.get(opts, :enable_conflict_guard?, true)
-    conflict_guard_name = Module.concat(name, :ConflictGuard)
+    cg_name = Module.concat(name, :ConflictGuard)
     # ConflictGuard should not crash if LeaseManager is down
-    get_machine_id = safe_caller(fn -> LeaseManager.machine_id(lease_manager_name) end, nil)
-    on_conflict = safe_caller(fn -> LeaseManager.lease_lost(lease_manager_name) end, :ok)
-    cg_opts = [name: conflict_guard_name, on_conflict: on_conflict, machine_id: get_machine_id]
-    cg = if enable_cg?, do: {ConflictGuard, cg_opts}, else: nil
+    get_machine_id = safe_caller(fn -> LeaseManager.machine_id(lm_name) end, nil)
+    on_conflict = safe_caller(fn -> LeaseManager.lease_lost(lm_name, :conflict_guard) end, :ok)
+    cg_opts = [name: cg_name, on_conflict: on_conflict, machine_id: get_machine_id]
+    conflict_guard = if enable_cg?, do: {ConflictGuard, cg_opts}, else: nil
 
     # Supervisor
-    [cache, lease_manager, cg]
+    [lease_cache, lease_manager, conflict_guard]
     |> Enum.reject(&is_nil/1)
     |> Supervisor.init(strategy: :one_for_one)
   end

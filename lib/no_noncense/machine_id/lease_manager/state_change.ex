@@ -29,21 +29,26 @@ defmodule NoNoncense.MachineId.LeaseManager.StateChange do
   """
   @spec on_lost(map(), term()) :: map()
   def on_lost(state, reason) do
-    Logger.critical("Lease lost: #{inspect(reason)}")
+    Logger.critical("Lease of ID #{state.machine_id} lost: #{inspect(reason)}")
     Telemetry.lease_lost(reason, max(0, state.expires_at_mono - now_mono()))
 
     state
-    |> clear_lease()
-    |> put_cache()
-    |> update_instances()
-    |> Timers.clear()
-    |> Timers.schedule(:reacquire, 0)
+    |> cleanup()
+    |> then(fn state ->
+      if state.strategy.deterministic?(), do: state, else: Timers.schedule(state, :reacquire, 0)
+    end)
     |> tap(fn state -> if state.on_lease_lost, do: state.on_lease_lost.(reason) end)
   end
 
-  @doc "Clears the lease fields without scheduling recovery or changing factory state."
-  @spec clear_lease(map()) :: map()
-  def clear_lease(state), do: %{state | leased?: false, machine_id: nil, lease: nil, attempt: 1}
+  @doc """
+  Cleanup the state (lease, cache, timers and instances) without triggering on_lease_lost.
+  """
+  @spec cleanup(map()) :: map()
+  def cleanup(state) do
+    state |> clear_lease() |> put_cache() |> update_instances() |> Timers.clear()
+  end
+
+  defp clear_lease(state), do: %{state | leased?: false, machine_id: nil, lease: nil, attempt: 1}
 
   defp put_cache(%{lease_cache: cache} = state) do
     if cache, do: LeaseCache.put(cache, Map.take(state, [:machine_id, :lease, :leased?]))

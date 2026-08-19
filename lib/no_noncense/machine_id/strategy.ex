@@ -21,24 +21,26 @@ defmodule NoNoncense.MachineId.Strategy do
       strategy cannot confirm whether the lease is still valid.
   """
 
-  @type machine_id :: non_neg_integer()
-  @type lease :: term()
-  @type lease_duration :: pos_integer()
-  @type ttl_ms :: pos_integer()
-  @type opts :: keyword()
-
   @doc "Acquire a new lease, returning the assigned machine ID and its actual validity period."
-  @callback acquire(lease_duration(), opts()) ::
-              {:ok, machine_id(), lease(), ttl_ms()} | {:error, reason :: term()}
+  @callback acquire(lease_duration :: pos_integer(), strategy_opts :: keyword()) ::
+              {:ok, machine_id :: non_neg_integer(), lease :: term(), ttl_ms :: pos_integer()}
+              | {:error, reason :: term()}
 
   @doc "Renew an existing lease, extending its validity period."
-  @callback renew(lease(), lease_duration(), opts()) ::
-              {:ok, lease(), ttl_ms()}
+  @callback renew(lease :: term(), lease_duration :: pos_integer(), strategy_opts :: keyword()) ::
+              {:ok, lease :: term(), ttl_ms :: pos_integer()}
               | {:error, :lost, reason :: term()}
               | {:error, :retry, reason :: term()}
 
   @doc "Best-effort release of a lease, e.g. on graceful shutdown."
-  @callback release(lease(), opts()) :: :ok
+  @callback release(lease :: term(), strategy_opts :: keyword()) :: :ok
+
+  @doc """
+  Indicates if the strategy will always return the same ID; re-acquisition is pointless if a conflict is detected.
+
+  Dynamic strategies (SqlLease and RedisLease for example) should override this and return false to enable re-acquisition attempts by the lease manager.
+  """
+  @callback deterministic? :: boolean()
 
   @doc "Imports the strategy behaviour and default stateless `renew/3` and `release/2` callbacks."
   defmacro __using__(_opts \\ []) do
@@ -52,6 +54,10 @@ defmodule NoNoncense.MachineId.Strategy do
       @impl true
       def release(_lease, _opts), do: :ok
       defoverridable release: 2
+
+      @impl true
+      def deterministic?(), do: true
+      defoverridable deterministic?: 0
     end
   end
 end

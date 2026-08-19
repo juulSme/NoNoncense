@@ -14,12 +14,10 @@ defmodule NoNoncense.MachineId.Strategy.HostIdentifiers do
         {NoNoncense.MachineId,
          strategy: NoNoncense.MachineId.Strategy.HostIdentifiers,
          strategy_opts: [node_list: [:"myapp@10.0.0.1", :"myapp@10.0.0.2"]],
-         on_lease_lost: fn _reason -> :erlang.halt(111) end,
          instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
       ]
 
-  The default `ConflictGuard` detects duplicate IDs among connected Erlang nodes. Halting on
-  lease loss prevents this deterministic strategy from reacquiring the same conflicting ID.
+  The default `ConflictGuard` detects duplicate IDs among connected Erlang nodes.
 
   ## Options
 
@@ -36,9 +34,7 @@ defmodule NoNoncense.MachineId.Strategy.HostIdentifiers do
 
   @type host_identifiers :: [binary() | atom()]
   @type opt :: {:node_list, host_identifiers()}
-  @type opts :: [opt()]
 
-  @doc "Matches this node's identifiers against `:node_list` and returns its stable list index."
   @impl true
   def acquire(lease_duration, opts) do
     Enum.into(opts, @defaults)
@@ -64,7 +60,7 @@ defmodule NoNoncense.MachineId.Strategy.HostIdentifiers do
       iex> id!(node_list: node_list)
       ** (RuntimeError) machine ID could not be determined
   """
-  @spec id!(opts()) :: non_neg_integer()
+  @spec id!([opt()]) :: non_neg_integer()
   def id!(opts \\ []) do
     case Enum.into(opts, @defaults) |> gen_machine_id() do
       {:ok, id} -> id

@@ -1,61 +1,93 @@
 if Code.ensure_loaded?(:telemetry) do
   defmodule NoNoncense.Telemetry do
     @moduledoc """
-    Telemetry events emitted by NoNoncense machine ID management.
+    Events emitted while managing machine IDs. Nonce generation is never instrumented.
 
-    This module is active only when the optional `:telemetry` dependency is available. It emits
-    events for lease management and conflict detection; nonce generation is never instrumented.
+    The module emits no events when the optional `:telemetry` dependency is unavailable.
 
-    ## Lease operations
+    ## Lease operation spans
 
-    Lease strategy calls emit span events for each `operation` in `:acquire`, `:renew`, and
-    `:release`:
+    Lease acquisition, renewal, and release emit a span, where `operation` is `:acquire`,
+    `:renew`, or `:release`.
 
-      `[:no_noncense, :machine_id, :lease, operation, :start]`
+      * Start: `[:no_noncense, :machine_id, :lease, operation, :start]`
+      * Stop: `[:no_noncense, :machine_id, :lease, operation, :stop]`
 
-      `[:no_noncense, :machine_id, :lease, operation, :stop]`
+    Start measurements:
 
-    The `:start` event includes `:system_time` and `:monotonic_time` in native time units. The
-    `:stop` event includes `:duration` in native time units and, for successful acquire and renew
-    operations, `:ttl_ms`. Both events include
-    `:strategy` and `:source` metadata. The `:stop` event additionally includes `:result`, one of
-    `:ok`, `:error`, `:retry`, or `:lost`.
+      * `:system_time` - system time in native time units when the operation began.
+      * `:monotonic_time` - monotonic time in native time units when the operation began.
 
-    `:source` identifies the lifecycle path: `:initial`, `:reacquire`, `:cache`, `:scheduled`, or
-    `:shutdown`.
+    Stop measurements:
 
-    ## Lease state changes
+      * `:duration` - elapsed monotonic time in native time units.
+      * `:ttl_ms` - granted lease duration in milliseconds; present only for successful acquire
+        and renew operations.
 
-    Retry scheduling emits:
+    Both events include these metadata fields:
 
-      `[:no_noncense, :machine_id, :lease, :retry]`
+      * `:strategy` - the lease strategy module.
+      * `source: :initial | :reacquire | :cache | :scheduled | :shutdown` - the operation's
+        lifecycle path.
 
-    with `:attempt` and `:delay_ms` measurements and `:operation` and `:reason` metadata.
+    Stop events also include `result: :ok | :error | :retry | :lost`. `:retry` and `:lost`
+    distinguish strategy-confirmed transient failures from confirmed lease loss.
 
-    A confirmed local lease loss or expiry emits:
+    ## Lease state events
 
-      `[:no_noncense, :machine_id, :lease, :lost]`
+    ### Retry scheduled
 
-    with a `:remaining_ttl_ms` measurement and a normalized `:reason` metadata value.
+    `[:no_noncense, :machine_id, :lease, :retry]` reports that a failed acquisition or renewal
+    will be retried.
 
-    ## Conflict guard
+    Measurements:
 
-    Each peer comparison emits:
+      * `:attempt` - the retry attempt number.
+      * `:delay_ms` - the delay before retrying, in milliseconds.
 
-      `[:no_noncense, :machine_id, :conflict_guard, :peer_checked]`
+    Metadata:
 
-    with `:outcome` metadata of `:different`, `:local_id_unavailable`, or `:match`.
+      * `operation: :acquire | :renew`.
+      * `:reason` - the strategy's atom reason, or `:other` when the reason is not an atom.
 
-    A duplicate machine ID emits:
+    ### Lease lost
 
-      `[:no_noncense, :machine_id, :conflict_guard, :conflict]`
+    `[:no_noncense, :machine_id, :lease, :lost]` reports local expiry or a confirmed loss of the
+    lease.
 
-    with `:resolution` metadata of `:local_node` when this node resolves the conflict, or
-    `:remote_node` when the peer does.
+    Measurements:
+
+      * `:remaining_ttl_ms` - milliseconds remaining in the locally tracked lease lifetime,
+        clamped to zero.
+
+    Metadata:
+
+      * `:reason` - the loss reason as an atom, or `:other` when the reason is not an atom.
+
+    ## Conflict guard events
+
+    ### Peer checked
+
+    `[:no_noncense, :machine_id, :conflict_guard, :peer_checked]` reports the result of comparing
+    this node's machine ID with a peer. It has no measurements.
+
+    Metadata:
+
+      * `outcome: :conflict | :no_local_id | :match`.
+
+    ### Conflict detected
+
+    `[:no_noncense, :machine_id, :conflict_guard, :conflict]` reports a duplicate machine ID. It
+    has no measurements.
+
+    Metadata:
+
+      * `resolution: :local_node | :remote_node` - whether this node or the peer resolves the
+        conflict.
     """
+    @behaviour NoNoncense.Telemetry.Behaviour
 
-    @doc false
-    @spec lease_operation((-> term()), :acquire | :renew | :release, map()) :: term()
+    @impl true
     def lease_operation(fun, operation, metadata) do
       :telemetry.span(
         [:no_noncense, :machine_id, :lease, operation],
@@ -67,8 +99,7 @@ if Code.ensure_loaded?(:telemetry) do
       )
     end
 
-    @doc false
-    @spec lease_retry(:acquire | :renew, pos_integer(), non_neg_integer(), term()) :: :ok
+    @impl true
     def lease_retry(operation, attempt, delay_ms, reason) do
       :telemetry.execute(
         [:no_noncense, :machine_id, :lease, :retry],
@@ -77,8 +108,7 @@ if Code.ensure_loaded?(:telemetry) do
       )
     end
 
-    @doc false
-    @spec lease_lost(term(), non_neg_integer()) :: :ok
+    @impl true
     def lease_lost(reason, remaining_ttl_ms) do
       :telemetry.execute(
         [:no_noncense, :machine_id, :lease, :lost],
@@ -87,8 +117,7 @@ if Code.ensure_loaded?(:telemetry) do
       )
     end
 
-    @doc false
-    @spec peer_checked(:different | :local_id_unavailable | :match) :: :ok
+    @impl true
     def peer_checked(outcome) do
       :telemetry.execute(
         [:no_noncense, :machine_id, :conflict_guard, :peer_checked],
@@ -97,8 +126,7 @@ if Code.ensure_loaded?(:telemetry) do
       )
     end
 
-    @doc false
-    @spec conflict(:local_node | :remote_node) :: :ok
+    @impl true
     def conflict(resolution) do
       :telemetry.execute(
         [:no_noncense, :machine_id, :conflict_guard, :conflict],
@@ -121,23 +149,24 @@ if Code.ensure_loaded?(:telemetry) do
     defp result_type(_), do: :error
 
     defp reason_category(atom) when is_atom(atom), do: atom
-    defp reason_category(_), do: :strategy
+    defp reason_category(_), do: :other
   end
 else
   defmodule NoNoncense.Telemetry do
     @moduledoc """
-    Telemetry must be loaded for this module to do useful work.
+    No-op telemetry implementation used when the optional `:telemetry` dependency is unavailable.
     """
+    @behaviour NoNoncense.Telemetry.Behaviour
 
-    @doc false
+    @impl true
     def lease_operation(fun, _, _), do: fun.()
-    @doc false
+    @impl true
     def lease_retry(_, _, _, _), do: :ok
-    @doc false
+    @impl true
     def lease_lost(_, _), do: :ok
-    @doc false
+    @impl true
     def peer_checked(_), do: :ok
-    @doc false
+    @impl true
     def conflict(_), do: :ok
   end
 end
