@@ -32,7 +32,13 @@ defmodule NoNoncense.MachineId.Strategy do
               | {:error, :lost, reason :: term()}
               | {:error, :retry, reason :: term()}
 
-  @doc "Best-effort release of a lease, e.g. on graceful shutdown."
+  @doc """
+  Best-effort release of a lease, e.g. on graceful shutdown.
+
+  This callback can run asynchronously after the lease manager has already attempted to acquire a
+  replacement. It must therefore be idempotent and only release when `lease` still identifies the
+  same acquisition; a stale lease must be a no-op.
+  """
   @callback release(lease :: term(), strategy_opts :: keyword()) :: :ok
 
   @doc """
