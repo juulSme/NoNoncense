@@ -27,7 +27,7 @@ if Code.ensure_loaded?(:telemetry) do
     Both events include these metadata fields:
 
       * `:strategy` - the lease strategy module.
-      * `source: :initial | :reacquire | :cache | :scheduled | :shutdown` - the operation's
+      * `source: :initial | :reacquire | :cache | :scheduled | :loss | :shutdown` - the operation's
         lifecycle path.
 
     Stop events also include `result: :ok | :error | :retry | :lost`. `:retry` and `:lost`

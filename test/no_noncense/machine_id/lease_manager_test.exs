@@ -27,6 +27,15 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
     @impl true
     def release(lease, opts) do
       if pid = opts[:notify], do: send(pid, {:release, lease})
+
+      if pid = opts[:block_release] do
+        send(pid, {:release_blocked, lease, self()})
+
+        receive do
+          {:resume_release, ^lease} -> :ok
+        end
+      end
+
       :ok
     end
 
@@ -447,7 +456,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       name =
         start_lease_manager!(
           strategy: FakeStrategy,
-          strategy_opts: [agent: agent],
+          strategy_opts: [agent: agent, notify: self()],
           on_lease_lost: fn reason ->
             send(test_pid, {:lease_lost, reason})
             receive do: (:resume_reacquisition -> :ok)
@@ -459,12 +468,36 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         capture_log(fn ->
           task = Task.async(fn -> LeaseManager.lease_lost(name) end)
           assert_receive {:lease_lost, :external}
+          assert_receive {:release, :lease1}
           assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
           send(name, :resume_reacquisition)
           assert :ok = Task.await(task)
         end)
 
       assert log =~ "Lease of ID 3 lost: :external"
+    end
+
+    test "reacquires without waiting for a blocked release" do
+      {:ok, agent} =
+        FakeStrategy.start_agent(
+          [{:ok, 3, :lease1, 100_000}, {:ok, 4, :lease2, 100_000}],
+          [{:ok, :lease1, 100_000}]
+        )
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify: self(), block_release: self()]
+        )
+
+      assert_receive {:acquire, {:ok, 3, :lease1, 100_000}}
+
+      capture_log(fn ->
+        assert :ok = LeaseManager.lease_lost(name)
+        assert_receive {:release_blocked, :lease1, release_pid}
+        assert_receive {:acquire, {:ok, 4, :lease2, 100_000}}
+        send(release_pid, {:resume_release, :lease1})
+      end)
     end
   end
 
@@ -529,6 +562,22 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
       assert_receive {:release, :lease1}
       assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
+    end
+
+    test "waits for release to finish before stopping" do
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 3, :lease1, 100_000}], [])
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, block_release: self()]
+        )
+
+      task = Task.async(fn -> GenServer.stop(name, :normal) end)
+      assert_receive {:release_blocked, :lease1, release_pid}
+      assert Task.yield(task, 20) == nil
+      send(release_pid, {:resume_release, :lease1})
+      assert :ok = Task.await(task)
     end
   end
 end

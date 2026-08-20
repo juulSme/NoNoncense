@@ -32,8 +32,9 @@ defmodule NoNoncense.MachineId.LeaseManager do
 
   Initial acquisition blocks startup. Once leased, the manager renews before the earlier of the
   configured renewal interval and the strategy-provided TTL. A confirmed loss or local expiry
-  disables every configured factory, invokes `:on_lease_lost` with a reason, and schedules
-  reacquisition. A successful reacquisition reinitializes the factories with the new machine ID.
+  disables every configured factory, asynchronously releases the lost strategy lease, invokes
+  `:on_lease_lost` with a reason, and schedules reacquisition. A successful reacquisition
+  reinitializes the factories with the new machine ID.
 
   An ambiguous renewal failure is retried while the known-valid window remains open. On graceful
   shutdown, the manager makes a best-effort call to the strategy's `release/2` callback when it
@@ -167,12 +168,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
     lease = LeaseCache.get(state.lease_cache)
     Enum.each(state.instances, &Instances.disable/1)
     :ok = ExpirationManager.lose(state.expiration_manager, :shutdown)
-
-    if is_map(lease) do
-      fn -> state.strategy.release(lease.lease, state.strategy_opts) end
-      |> Telemetry.lease_operation(:release, %{strategy: state.strategy, source: :shutdown})
-    end
-
+    if lease, do: release(state, lease, :shutdown)
     :ok
   end
 
@@ -253,6 +249,8 @@ defmodule NoNoncense.MachineId.LeaseManager do
 
     state = Timers.clear(state)
 
+    Task.start(fn -> release(state, lease, :loss) end)
+
     state =
       if state.strategy.deterministic?(), do: state, else: Timers.schedule(state, :reacquire, 0)
 
@@ -287,6 +285,11 @@ defmodule NoNoncense.MachineId.LeaseManager do
     |> Enum.each(&Instances.re_init/1)
 
     state
+  end
+
+  defp release(state, lease, source) do
+    fn -> state.strategy.release(lease.lease, state.strategy_opts) end
+    |> Telemetry.lease_operation(:release, %{strategy: state.strategy, source: source})
   end
 
   defp now_mono(), do: :erlang.monotonic_time(:millisecond)
