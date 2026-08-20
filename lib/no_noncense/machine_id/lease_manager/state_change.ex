@@ -59,9 +59,9 @@ defmodule NoNoncense.MachineId.LeaseManager.StateChange do
     if state.leased? do
       state.instances
       |> Enum.map(&Keyword.put(&1, :machine_id, state.machine_id))
-      |> Instances.re_init_all()
+      |> Enum.each(&Instances.re_init/1)
     else
-      Instances.disable_all(state.instances)
+      Enum.each(state.instances, &Instances.disable/1)
     end
 
     state

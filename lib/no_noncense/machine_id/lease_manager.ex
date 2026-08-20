@@ -188,7 +188,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
   @impl true
   def terminate(_reason, state) do
     if state.leased? do
-      Instances.disable_all(state.instances)
+      Enum.each(state.instances, &Instances.disable/1)
 
       fn -> state.strategy.release(state.lease, state.strategy_opts) end
       |> Telemetry.lease_operation(:release, %{strategy: state.strategy, source: :shutdown})
