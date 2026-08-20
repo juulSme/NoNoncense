@@ -2,7 +2,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
   use ExUnit.Case, async: true
   import ExUnit.CaptureLog
 
-  alias NoNoncense.MachineId.{LeaseCache, LeaseManager}
+  alias NoNoncense.MachineId.{ExpirationManager, LeaseCache, LeaseManager}
 
   defmodule FakeStrategy do
     @behaviour NoNoncense.MachineId.Strategy
@@ -45,9 +45,34 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
   defp unique_name(prefix), do: :"#{prefix}_#{System.unique_integer([:positive, :monotonic])}"
 
+  defp cache_name(name), do: :"#{name}_cache"
+  defp expiration_manager_name(name), do: :"#{name}_expiration_manager"
+
+  defp start_dependencies!(name, opts) do
+    cache = Keyword.get(opts, :lease_cache, cache_name(name))
+
+    if is_nil(Process.whereis(cache)) do
+      start_supervised!({LeaseCache, name: cache})
+    end
+
+    expiration_manager = Keyword.get(opts, :expiration_manager, expiration_manager_name(name))
+
+    start_supervised!(
+      {ExpirationManager,
+       name: expiration_manager,
+       lease_cache: cache,
+       lease_manager: name,
+       instances: Keyword.get(opts, :instances, [])}
+    )
+
+    [lease_cache: cache, expiration_manager: expiration_manager]
+  end
+
   defp start_lease_manager!(opts) do
     test_pid = self()
     name = Keyword.get(opts, :name, unique_name("lm"))
+
+    dependencies = start_dependencies!(name, opts)
 
     opts =
       opts
@@ -55,6 +80,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       |> Keyword.put_new(:lease_duration, 100_000)
       |> Keyword.put_new(:renew_interval, 100_000)
       |> Keyword.put_new(:on_lease_lost, fn reason -> send(test_pid, {:lease_lost, reason}) end)
+      |> Keyword.merge(dependencies)
 
     start_supervised!({LeaseManager, opts})
     name
@@ -83,14 +109,18 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
     test "fails startup when acquisition does not succeed before the timeout" do
       {:ok, agent} = FakeStrategy.start_agent([{:error, :down}], [{:ok, :lease, 100_000}])
       Process.flag(:trap_exit, true)
+      name = unique_name("lm")
+      dependencies = start_dependencies!(name, [])
 
       {result, _log} =
         with_log(fn ->
           LeaseManager.start_link(
-            name: unique_name("lm"),
-            strategy: FakeStrategy,
-            strategy_opts: [agent: agent],
-            acquire_timeout: 30
+            [
+              name: name,
+              strategy: FakeStrategy,
+              strategy_opts: [agent: agent],
+              acquire_timeout: 30
+            ] ++ dependencies
           )
         end)
 
@@ -100,14 +130,18 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
     test "does not retry acquisition after the deadline" do
       {:ok, agent} = FakeStrategy.start_agent([{:error, :down}], [{:ok, :lease, 100_000}])
       Process.flag(:trap_exit, true)
+      name = unique_name("lm")
+      dependencies = start_dependencies!(name, [])
 
       {result, _log} =
         with_log(fn ->
           LeaseManager.start_link(
-            name: unique_name("lm"),
-            strategy: FakeStrategy,
-            strategy_opts: [agent: agent, notify: self()],
-            acquire_timeout: 50
+            [
+              name: name,
+              strategy: FakeStrategy,
+              strategy_opts: [agent: agent, notify: self()],
+              acquire_timeout: 50
+            ] ++ dependencies
           )
         end)
 
@@ -120,14 +154,18 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       {:ok, agent} = FakeStrategy.start_agent([{:ok, 3, :lease1, 29_999}], [])
       test_pid = self()
       Process.flag(:trap_exit, true)
+      name = unique_name("lm")
+      dependencies = start_dependencies!(name, [])
 
       {result, _log} =
         with_log(fn ->
           LeaseManager.start_link(
-            name: unique_name("lm"),
-            strategy: FakeStrategy,
-            strategy_opts: [agent: agent],
-            on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
+            [
+              name: name,
+              strategy: FakeStrategy,
+              strategy_opts: [agent: agent],
+              on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
+            ] ++ dependencies
           )
         end)
 
@@ -138,7 +176,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
     test "renews a cached lease before attempting a new acquisition" do
       cache_name = unique_name("cache")
       start_supervised!({LeaseCache, name: cache_name})
-      LeaseCache.put(cache_name, %{machine_id: 12, lease: :cached, leased?: true})
+      LeaseCache.put(cache_name, 12, :cached, 100_000)
 
       {:ok, agent} =
         FakeStrategy.start_agent([{:error, :should_not_acquire}], [{:ok, :cached, 100_000}])
@@ -153,35 +191,121 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       assert LeaseManager.machine_id(name) == 12
     end
 
+    defmodule RaceStrategy do
+      @moduledoc "Forces the expiration manager to clear the cache mid-renew, simulating a race."
+      @behaviour NoNoncense.MachineId.Strategy
+
+      @impl true
+      def acquire(_lease_duration, _opts), do: {:ok, 4, :replacement, 100_000}
+
+      @impl true
+      def renew(_lease, _lease_duration, opts) do
+        send(opts[:expiration_manager], {:expired, opts[:generation]})
+        # block until the expired message above has been processed
+        :sys.get_state(opts[:expiration_manager])
+        {:ok, :renewed, 100_000}
+      end
+
+      @impl true
+      def release(_lease, _opts), do: :ok
+
+      @impl true
+      def deterministic?(), do: false
+    end
+
+    test "falls back to a fresh acquisition when the cache expires mid-renew" do
+      cache_name = unique_name("cache")
+      manager_name = unique_name("expiration_manager")
+      name = unique_name("lm")
+      test_pid = self()
+      start_supervised!({LeaseCache, name: cache_name})
+      LeaseCache.put(cache_name, 12, :cached, 20_000)
+
+      start_supervised!(
+        {ExpirationManager,
+         name: manager_name, lease_cache: cache_name, lease_manager: name, instances: []}
+      )
+
+      %{generation: generation} = :sys.get_state(manager_name)
+
+      {result, _log} =
+        with_log(fn ->
+          start_supervised(
+            {LeaseManager,
+             name: name,
+             strategy: RaceStrategy,
+             strategy_opts: [expiration_manager: manager_name, generation: generation],
+             lease_cache: cache_name,
+             expiration_manager: manager_name,
+             on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end,
+             instances: []}
+          )
+        end)
+
+      assert {:ok, _pid} = result
+      assert LeaseManager.machine_id(name) == 4
+      refute_receive {:lease_lost, :expired}, 20
+    end
+
+    test "does not report an old cached lease as lost after acquiring a replacement" do
+      cache_name = unique_name("cache")
+      start_supervised!({LeaseCache, name: cache_name})
+      LeaseCache.put(cache_name, 12, :cached, 100_000)
+
+      {:ok, agent} =
+        FakeStrategy.start_agent(
+          [{:ok, 4, :replacement, 100_000}],
+          [{:error, :retry, :unavailable}]
+        )
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent],
+          lease_cache: cache_name
+        )
+
+      assert LeaseManager.machine_id(name) == 4
+      refute_receive {:lease_lost, _}, 20
+      assert %{timers: timers} = :sys.get_state(name)
+      refute Map.has_key?(timers, :reacquire)
+    end
+
     test "disables factories when a cached lease cannot be renewed" do
       cache_name = unique_name("cache")
       instance = unique_name("nonce")
       test_pid = self()
       start_supervised!({LeaseCache, name: cache_name})
-      LeaseCache.put(cache_name, %{machine_id: 12, lease: :cached, leased?: true})
+      LeaseCache.put(cache_name, 12, :cached, 100_000)
       NoNoncense.init(machine_id: 12, name: instance)
 
       {:ok, agent} =
         FakeStrategy.start_agent([{:error, :down}], [{:error, :retry, :unavailable}])
 
       Process.flag(:trap_exit, true)
+      name = unique_name("lm")
+
+      dependencies =
+        start_dependencies!(name, lease_cache: cache_name, instances: [[name: instance]])
 
       {result, _log} =
         with_log(fn ->
           LeaseManager.start_link(
-            name: unique_name("lm"),
-            strategy: FakeStrategy,
-            strategy_opts: [agent: agent],
-            lease_cache: cache_name,
-            instances: [[name: instance]],
-            acquire_timeout: 0,
-            on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
+            [
+              name: name,
+              strategy: FakeStrategy,
+              strategy_opts: [agent: agent],
+              lease_cache: cache_name,
+              instances: [[name: instance]],
+              acquire_timeout: 0,
+              on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
+            ] ++ dependencies
           )
         end)
 
       assert {:error, :lease_acquisition_failed} = result
       assert_receive {:lease_lost, :timeout}
-      assert LeaseCache.get(cache_name) == %{machine_id: nil, lease: nil, leased?: false}
+      assert LeaseCache.get(cache_name) == nil
       assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
     end
   end
@@ -309,7 +433,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
       assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
       refute_receive {:acquire, _}, 20
-      assert %{leased?: false, timers: timers} = :sys.get_state(name)
+      assert %{timers: timers} = :sys.get_state(name)
       refute Map.has_key?(timers, :reacquire)
     end
 
@@ -349,7 +473,8 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
     # 10s before actual TTL expiry - leaving a 10s gap for retries between the two
     defp scheduled_delays(name) do
       %{timers: timers} = :sys.get_state(name)
-      {Process.read_timer(timers[:renew]), Process.read_timer(timers[:expired])}
+      %{timer: expiration_timer} = :sys.get_state(expiration_manager_name(name))
+      {Process.read_timer(timers[:renew]), Process.read_timer(expiration_timer)}
     end
 
     test "renew and expired are scheduled off the granted TTL when it is the limiting factor" do
