@@ -108,7 +108,9 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
       assert :ok = SqlLease.release(lease, @opts)
 
       released = MysqlRepo.get(NoNoncenseLease, id)
+      assert released.token == nil
       assert DateTime.compare(released.expires_at, DateTime.utc_now()) != :gt
+      assert {:error, :lost, :expired} = SqlLease.renew(lease, 10_000, @opts)
       assert {:ok, ^id, _new_lease, _ttl} = SqlLease.acquire(10_000, @opts)
     end
 
