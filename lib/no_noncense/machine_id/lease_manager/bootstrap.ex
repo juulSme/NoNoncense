@@ -1,7 +1,7 @@
 defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   @moduledoc false
 
-  alias NoNoncense.MachineId.{ExpirationManager, LeaseCache}
+  alias NoNoncense.MachineId.LeaseStore
   alias NoNoncense.MachineId.LeaseManager.Backoff
   alias NoNoncense.Telemetry
   require Logger
@@ -9,45 +9,44 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   @doc """
   Acquires a machine ID during LeaseManager startup.
 
-  - try to fetch a cached lease
+  - try to fetch a stored lease
   - renew it if still locally valid (single attempt), falling back to a fresh acquisition on
-    failure, an illegal TTL, or a race where the expiration manager clears the cache mid-renew
+    failure, an illegal TTL, or a race where the store expires mid-renew
   - acquire a new lease otherwise
 
   This runs synchronously, so the manager does not start until it has a valid lease.
   """
-  @spec acquire_initial_id(map()) :: {:ok, LeaseCache.lease()} | {:error, term()}
+  @spec acquire_initial_id(map()) :: {:ok, LeaseStore.lease()} | {:error, term()}
   def acquire_initial_id(state) do
-    case LeaseCache.get(state.lease_cache) do
-      lease when is_map(lease) -> renew_cached(state, lease)
-      nil -> acquire_new(state)
+    with %{} = lease <- LeaseStore.get(state.lease_store),
+         true <- LeaseStore.valid?(lease) do
+      renew_cached(state, lease)
+    else
+      _ ->
+        LeaseStore.discard(state.lease_store)
+        acquire_new(state)
     end
   end
 
   defp renew_cached(state, lease) do
-    if LeaseCache.valid?(lease) do
-      fn -> state.strategy.renew(lease.lease, state.lease_duration, state.strategy_opts) end
-      |> Telemetry.lease_operation(:renew, %{strategy: state.strategy, source: :cache})
-      |> case do
-        {:ok, renewed_lease, ttl_ms} when ttl_ms >= 30_000 ->
-          case ExpirationManager.renew(state.expiration_manager, renewed_lease, ttl_ms) do
-            {:ok, cached_lease} -> {:ok, cached_lease}
-            # cache was cleared by the expiration manager's own timer while renewing
-            :lost -> acquire_new(state)
-          end
+    op = fn -> state.strategy.renew(lease.lease, state.lease_duration, state.strategy_opts) end
 
-        {:ok, _, _} ->
-          ExpirationManager.discard(state.expiration_manager)
-          {:error, :illegal_ttl}
-
-        {:error, _status, reason} ->
-          Logger.debug("Failed to renew lease of ID #{lease.machine_id}: #{inspect(reason)}")
-          ExpirationManager.discard(state.expiration_manager)
-          acquire_new(state)
-      end
+    with {:ok, renewed_lease, ttl_ms} when ttl_ms >= 30_000 <-
+           Telemetry.lease_operation(op, :renew, %{strategy: state.strategy, source: :store}),
+         {:ok, stored_lease} <- LeaseStore.renew(state.lease_store, renewed_lease, ttl_ms) do
+      {:ok, stored_lease}
     else
-      ExpirationManager.discard(state.expiration_manager)
-      acquire_new(state)
+      {:ok, _, _} ->
+        LeaseStore.discard(state.lease_store)
+        {:error, :illegal_ttl}
+
+      :lost ->
+        acquire_new(state)
+
+      {:error, _status, reason} ->
+        Logger.debug("Failed to renew lease of ID #{lease.machine_id}: #{inspect(reason)}")
+        LeaseStore.discard(state.lease_store)
+        acquire_new(state)
     end
   end
 
@@ -66,7 +65,7 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
       |> Telemetry.lease_operation(:acquire, %{strategy: state.strategy, source: :initial})
       |> case do
         {:ok, machine_id, lease, ttl_ms} when ttl_ms >= 30_000 ->
-          ExpirationManager.acquire(state.expiration_manager, machine_id, lease, ttl_ms)
+          {:ok, LeaseStore.put(state.lease_store, machine_id, lease, ttl_ms)}
 
         {:ok, _, _, _} ->
           {:error, :illegal_ttl}
