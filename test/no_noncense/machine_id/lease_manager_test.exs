@@ -93,6 +93,16 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
   end
 
   describe "initial acquisition" do
+    test "requires a strategy and lease store" do
+      assert_raise ArgumentError, ":strategy must be provided", fn ->
+        LeaseManager.start_link(lease_store: unique_name("store"))
+      end
+
+      assert_raise ArgumentError, ":lease_store must be provided", fn ->
+        LeaseManager.start_link(strategy: FakeStrategy)
+      end
+    end
+
     test "retries synchronously until it acquires a lease" do
       {:ok, agent} =
         FakeStrategy.start_agent([{:error, :down}, {:ok, 7, :lease, 100_000}], [
@@ -244,7 +254,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       name = unique_name("lm")
       test_pid = self()
       start_supervised!({LeaseStore, name: store_name, lease_manager: name})
-      LeaseStore.put(store_name, 12, :stored, 20_000)
+      LeaseStore.put(store_name, 12, :stored, 30_000)
 
       %{generation: generation} = :sys.get_state(store_name)
 

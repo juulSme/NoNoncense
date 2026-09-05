@@ -32,6 +32,17 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     assert Process.alive?(pid)
   end
 
+  test "rejects TTLs below the minimum" do
+    %{name: name} = start_store!()
+
+    for ttl_ms <- [-1, 0, 29_999] do
+      assert_raise FunctionClauseError, fn -> LeaseStore.put(name, 7, :token, ttl_ms) end
+      assert_raise FunctionClauseError, fn -> LeaseStore.renew(name, :token, ttl_ms) end
+    end
+
+    assert LeaseStore.get(name) == nil
+  end
+
   test "renewing retains the machine ID and replaces the lease" do
     %{name: name, pid: pid} = start_store!()
     LeaseStore.put(name, 7, :old_token, 30_000)

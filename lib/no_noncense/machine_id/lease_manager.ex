@@ -92,6 +92,9 @@ defmodule NoNoncense.MachineId.LeaseManager do
   """
   @spec start_link([opt()]) :: GenServer.on_start()
   def start_link(opts) do
+    opts[:strategy] || raise ArgumentError, ":strategy must be provided"
+    opts[:lease_store] || raise ArgumentError, ":lease_store must be provided"
+
     opts = Enum.into(opts, @default_state)
     # init/1 blocks while acquiring; the default 5s GenServer init timeout must not apply
     GenServer.start_link(__MODULE__, opts, name: opts.name, timeout: :infinity)

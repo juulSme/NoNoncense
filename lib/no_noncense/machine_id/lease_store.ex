@@ -12,6 +12,7 @@ defmodule NoNoncense.MachineId.LeaseStore do
 
   @retry_delay 10
   @max_notification_retries 10
+  @min_ttl_ms 30_000
 
   @type lease :: %{machine_id: 0..511, lease: term(), expires_at_mono: integer()}
 
@@ -28,13 +29,15 @@ defmodule NoNoncense.MachineId.LeaseStore do
 
   @doc "Stores a newly acquired lease."
   @spec put(GenServer.name(), 0..511, term(), pos_integer()) :: lease()
-  def put(name \\ __MODULE__, machine_id, lease, ttl_ms) when is_integer(ttl_ms) do
+  def put(name \\ __MODULE__, machine_id, lease, ttl_ms)
+      when is_integer(ttl_ms) and ttl_ms >= @min_ttl_ms do
     GenServer.call(name, {:put, machine_id, lease, ttl_ms})
   end
 
   @doc "Replaces an active lease while retaining its machine ID."
   @spec renew(GenServer.name(), term(), pos_integer()) :: {:ok, lease()} | :lost
-  def renew(name \\ __MODULE__, lease, ttl_ms) when is_integer(ttl_ms),
+  def renew(name \\ __MODULE__, lease, ttl_ms)
+      when is_integer(ttl_ms) and ttl_ms >= @min_ttl_ms,
     do: GenServer.call(name, {:renew, lease, ttl_ms})
 
   @doc "Reports the current lease as lost, disabling factories and notifying the lease manager."
