@@ -430,7 +430,7 @@ defmodule NoNoncense do
           _ -> gen_srt_nonce(cfg, bit_size)
         end
 
-      count >= @max_count_64 and bit_size == 64 ->
+      count >= @counter_64_range and bit_size == 64 ->
         # Time has not progressed, but the new count overflows 64-bit counter size; retry.
         gen_srt_nonce(cfg, bit_size)
 
