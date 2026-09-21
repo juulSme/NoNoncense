@@ -36,8 +36,7 @@ defmodule NoNoncense.MachineId.LeaseStore do
 
   @doc "Replaces an active lease while retaining its machine ID."
   @spec renew(GenServer.name(), term(), pos_integer()) :: {:ok, lease()} | :lost
-  def renew(name \\ __MODULE__, lease, ttl_ms)
-      when is_integer(ttl_ms) and ttl_ms >= @min_ttl_ms,
+  def renew(name \\ __MODULE__, lease, ttl_ms) when is_integer(ttl_ms) and ttl_ms >= @min_ttl_ms,
     do: GenServer.call(name, {:renew, lease, ttl_ms})
 
   @doc "Reports the current lease as lost, disabling factories and notifying the lease manager."
