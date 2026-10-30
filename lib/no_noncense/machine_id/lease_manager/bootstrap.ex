@@ -1,63 +1,62 @@
 defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   @moduledoc false
 
-  alias NoNoncense.MachineId.LeaseCache
-  alias NoNoncense.MachineId.LeaseManager.{Backoff, StateChange}
+  alias NoNoncense.MachineId.LeaseStore
+  alias NoNoncense.MachineId.LeaseManager.Backoff
   alias NoNoncense.Telemetry
   require Logger
 
   @doc """
   Acquires a machine ID during LeaseManager startup.
 
-  - try to fetch a cached ID and lease
-  - renew the cached lease if it exists (single attempt)
+  - try to fetch a stored lease
+  - renew it if still locally valid (single attempt), falling back to a fresh acquisition on
+    failure, an illegal TTL, or a race where the store expires mid-renew
   - acquire a new lease otherwise
 
   This runs synchronously, so the manager does not start until it has a valid lease.
   """
-  @spec acquire_initial_id(map()) :: map()
+  @spec acquire_initial_id(map()) :: {:ok, LeaseStore.lease()} | {:error, term()}
   def acquire_initial_id(state) do
-    state |> fetch_cached() |> renew_if_leased() |> acquire_unless_leased()
-  end
-
-  defp fetch_cached(state = %{lease_cache: nil}), do: state
-
-  defp fetch_cached(%{lease_cache: cache} = state),
-    do: Map.merge(state, LeaseCache.get(cache) || %{})
-
-  defp renew_if_leased(state = %{machine_id: machine_id}) when state.leased? do
-    fn -> state.strategy.renew(state.lease, state.lease_duration, state.strategy_opts) end
-    |> Telemetry.lease_operation(:renew, %{strategy: state.strategy, source: :cache})
-    |> case do
-      {:ok, lease, ttl_ms} ->
-        Logger.debug("Lease of ID #{machine_id} renewed for #{ttl_ms}ms.")
-        StateChange.on_renewed(state, lease, ttl_ms)
-
-      {:error, status, reason} ->
-        Logger.debug("Failed to renew lease of ID #{machine_id}: #{inspect({status, reason})}")
-        StateChange.cleanup(state)
+    with %{} = lease <- LeaseStore.get(state.lease_store),
+         true <- LeaseStore.valid?(lease) do
+      renew_cached(state, lease)
+    else
+      _ ->
+        LeaseStore.discard(state.lease_store)
+        acquire_new(state)
     end
   end
 
-  defp renew_if_leased(state), do: state
+  defp renew_cached(state, lease) do
+    op = fn -> state.strategy.renew(lease.lease, state.lease_duration, state.strategy_opts) end
 
-  defp acquire_unless_leased(state) when not state.leased? do
+    with {:ok, renewed_lease, ttl_ms} when ttl_ms >= 30_000 <-
+           Telemetry.lease_operation(op, :renew, %{strategy: state.strategy, source: :store}),
+         {:ok, stored_lease} <- LeaseStore.renew(state.lease_store, renewed_lease, ttl_ms) do
+      {:ok, stored_lease}
+    else
+      {:ok, _, _} ->
+        LeaseStore.discard(state.lease_store)
+        {:error, :illegal_ttl}
+
+      :lost ->
+        acquire_new(state)
+
+      {:error, _status, reason} ->
+        Logger.debug("Failed to renew lease of ID #{lease.machine_id}: #{inspect(reason)}")
+        LeaseStore.discard(state.lease_store)
+        acquire_new(state)
+    end
+  end
+
+  defp acquire_new(state) do
     acquire_timeout = state.acquire_timeout
     deadline = if acquire_timeout == :infinity, do: :infinity, else: now_mono() + acquire_timeout
-
-    case acquire_until(state, deadline) do
-      {:ok, machine_id, lease, ttl_ms} ->
-        Logger.info("Lease of ID #{machine_id} acquired for #{ttl_ms}ms.")
-        StateChange.on_renewed(%{state | machine_id: machine_id}, lease, ttl_ms)
-
-      {:error, reason} ->
-        StateChange.on_lost(state, reason)
-    end
+    acquire_new_until(state, deadline)
   end
 
-  defp acquire_unless_leased(state), do: state
-
-  defp acquire_until(state, deadline) do
+  defp acquire_new_until(state, deadline) do
     if deadline_expired?(deadline) do
       Logger.critical("Acquisition failed, deadline exceeded.")
       {:error, :timeout}
@@ -65,8 +64,11 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
       fn -> state.strategy.acquire(state.lease_duration, state.strategy_opts) end
       |> Telemetry.lease_operation(:acquire, %{strategy: state.strategy, source: :initial})
       |> case do
-        {:ok, _, _, _} = ok ->
-          ok
+        {:ok, machine_id, lease, ttl_ms} when ttl_ms >= 30_000 ->
+          {:ok, LeaseStore.put(state.lease_store, machine_id, lease, ttl_ms)}
+
+        {:ok, _, _, _} ->
+          {:error, :illegal_ttl}
 
         {:error, reason} ->
           Logger.warning("Acquisition failed: #{inspect(reason)}")
@@ -78,7 +80,7 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
             Process.sleep(delay)
           end
 
-          acquire_until(%{state | attempt: state.attempt + 1}, deadline)
+          acquire_new_until(%{state | attempt: state.attempt + 1}, deadline)
       end
     end
   end

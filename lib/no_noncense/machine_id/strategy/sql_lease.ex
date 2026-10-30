@@ -137,7 +137,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
 
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.token == ^token,
-        update: [set: [expires_at: db_now()], inc: [lock_version: 1]]
+        update: [set: [token: nil, expires_at: db_now()], inc: [lock_version: 1]]
       )
       |> update_all(repo)
 

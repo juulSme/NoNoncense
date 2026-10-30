@@ -108,7 +108,9 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
       assert :ok = SqlLease.release(lease, @opts)
 
       released = PgRepo.get(NoNoncenseLease, id)
+      assert released.token == nil
       assert DateTime.compare(released.expires_at, DateTime.utc_now()) != :gt
+      assert {:error, :lost, :expired} = SqlLease.renew(lease, 10_000, @opts)
 
       # can't reuse SqlLease.acquire/2 here: within this test's sandbox transaction,
       # Postgres' CURRENT_TIMESTAMP is pinned to transaction start, so it never advances

@@ -17,10 +17,10 @@ defmodule NoNoncense.Constants do
       @count_bits_64 64 - @ts_bits - @id_bits
       # no of counter bits in a 96-bit nonce
       @count_bits_96 96 - @ts_bits - @id_bits
-      # max value of 64-bit nonce counter
-      @max_count_64 2 ** @count_bits_64
+      # number of values in a 64-bit nonce counter
+      @counter_64_range 2 ** @count_bits_64
       # bitmask for the 13 counter bits in a 64-bit nonce
-      @count_mask_64 @max_count_64 - 1
+      @count_mask_64 @counter_64_range - 1
       # bitmask for the 45 counter bits in a 96-bit nonce
       @count_mask_96 2 ** @count_bits_96 - 1
       # bitmask for the 22 non-timestamp bits in the sortable counter
@@ -32,7 +32,7 @@ defmodule NoNoncense.Constants do
       # no of padding bits in a 128-bit nonce
       @padding_bits_128 128 - @ts_bits - @id_bits - 64
       # maximum timestamp value
-      @max_ts 2 ** @ts_bits
+      @max_ts 2 ** @ts_bits - 1
 
       # atomics indexes
       @counter64_idx 1

@@ -1,5 +1,5 @@
 defmodule NoNoncense.MachineId do
-  alias NoNoncense.MachineId.{ConflictGuard, LeaseCache, LeaseManager}
+  alias NoNoncense.MachineId.{ConflictGuard, LeaseStore, LeaseManager}
 
   @options_docs """
     * `:name` - registered name of this supervisor (default `#{inspect(__MODULE__)}`)
@@ -86,21 +86,24 @@ defmodule NoNoncense.MachineId do
   @impl true
   def init(opts) do
     name = opts[:name] || __MODULE__
-
-    # LeaseCache
-    cache_name = Module.concat(name, :LeaseCache)
-    cache_opts = [name: cache_name]
-    lease_cache = {LeaseCache, cache_opts}
-
-    # LeaseManager
-    lm_name = Module.concat(name, :LeaseManager)
     instances = Keyword.fetch!(opts, :instances)
     instances = Enum.map(instances, &Keyword.put_new(&1, :name, NoNoncense))
 
+    # LeaseStore
+    store_name = Module.concat(name, :LeaseStore)
+    lm_name = Module.concat(name, :LeaseManager)
+    store_opts = [name: store_name, lease_manager: lm_name, instances: instances]
+    lease_store = {LeaseStore, store_opts}
+
+    # LeaseManager
     lm_opts =
       opts
       |> Keyword.drop([:enable_conflict_guard?])
-      |> Keyword.merge(name: lm_name, instances: instances, lease_cache: cache_name)
+      |> Keyword.merge(
+        name: lm_name,
+        instances: instances,
+        lease_store: store_name
+      )
 
     lease_manager = {LeaseManager, lm_opts}
 
@@ -114,9 +117,9 @@ defmodule NoNoncense.MachineId do
     conflict_guard = if enable_cg?, do: {ConflictGuard, cg_opts}, else: nil
 
     # Supervisor
-    [lease_cache, lease_manager, conflict_guard]
+    [lease_store, lease_manager, conflict_guard]
     |> Enum.reject(&is_nil/1)
-    |> Supervisor.init(strategy: :one_for_one)
+    |> Supervisor.init(strategy: :rest_for_one)
   end
 
   # create a function that can call a genserver that is down without crashing

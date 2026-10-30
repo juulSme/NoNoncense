@@ -304,7 +304,7 @@ defmodule NoNoncenseTest do
 
       # jump to cycle #99, which should not generate nonces until 99ms have passed
       cycle_count = 99
-      :atomics.put(counter_ref, @counter64_idx, @max_count_64 * cycle_count - 5)
+      :atomics.put(counter_ref, @counter64_idx, @counter_64_range * cycle_count - 5)
       not_before = init_at + cycle_count
 
       1..10
@@ -327,7 +327,7 @@ defmodule NoNoncenseTest do
       |> Task.await_many()
       |> Enum.sort_by(& &1.info.total_count)
       |> Enum.each(fn %{post: post, info: info} ->
-        nonce_n = info.total_count - cycle_count * @max_count_64
+        nonce_n = info.total_count - cycle_count * @counter_64_range
 
         if info.cycle == cycle_count do
           assert post >= not_before,
