@@ -14,19 +14,19 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:alpine
         env:
           POSTGRES_PASSWORD: supersecret
         ports:
           - 5432:5432
       mysql:
-        image: mysql:9
+        image: mysql:lts
         env:
           MYSQL_ROOT_PASSWORD: supersecret
         ports:
           - 3306:3306
       valkey:
-        image: valkey/valkey:9-alpine
+        image: valkey/valkey:alpine
         ports:
           - 6379:6379
 
