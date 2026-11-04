@@ -1,6 +1,5 @@
 defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
   use TestNoNoncense.DataCase, repo: :pg
-  use Mimic
   import ExUnit.CaptureLog
   @moduletag :integration
 
@@ -89,17 +88,6 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
       assert {:error, :lost, :expired} = SqlLease.renew(stale_lease, 10_000, @opts)
       assert {:ok, _renewed, _ttl} = SqlLease.renew(current_lease, 10_000, @opts)
     end
-
-    test "returns {:error, :retry, _} instead of raising when the repo errors unexpectedly" do
-      assert {:ok, _id, lease, _ttl} = SqlLease.acquire(10_000, @opts)
-
-      stub(PgRepo, :update_all, fn _query, _opts ->
-        raise DBConnection.ConnectionError, message: "connection closed"
-      end)
-
-      {result, _log} = with_log(fn -> SqlLease.renew(lease, 10_000, @opts) end)
-      assert {:error, :retry, _reason} = result
-    end
   end
 
   describe "release/2" do
@@ -132,16 +120,6 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
 
       {_, _log} = with_log(fn -> assert :ok = SqlLease.release(stale_lease, @opts) end)
       assert {:ok, _renewed, _ttl} = SqlLease.renew(current_lease, 10_000, @opts)
-    end
-
-    test "returns :ok even if the underlying update fails unexpectedly" do
-      assert {:ok, _id, lease, _ttl} = SqlLease.acquire(10_000, @opts)
-
-      stub(PgRepo, :update_all, fn _query, _opts ->
-        raise DBConnection.ConnectionError, message: "connection closed"
-      end)
-
-      {_, _log} = with_log(fn -> assert :ok = SqlLease.release(lease, @opts) end)
     end
   end
 end

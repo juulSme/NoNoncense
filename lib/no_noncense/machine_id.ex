@@ -13,9 +13,8 @@ defmodule NoNoncense.MachineId do
 
   Every node generating nonces needs a unique machine ID (0–511). `NoNoncense.MachineId`
   acquires and holds that ID through a pluggable strategy, automatically renewing it in the
-  background. `LeaseManager` directly initializes the configured `NoNoncense` factories after
-  acquiring a lease, disables them when that lease is lost, and initializes them again after a
-  successful reacquisition.
+  background. `LeaseStore` enables the configured `NoNoncense` factories when a lease is accepted,
+  disables them when that lease is lost, and enables them again after a successful reacquisition.
 
   ## Usage
 
@@ -60,13 +59,8 @@ defmodule NoNoncense.MachineId do
   use Supervisor
 
   @type opt ::
-          {:name, module()}
-          | {:strategy, module()}
-          | {:strategy_opts, keyword()}
-          | {:lease_duration, pos_integer()}
-          | {:renew_interval, pos_integer()}
-          | {:acquire_timeout, pos_integer() | :infinity}
-          | {:on_lease_lost, (term() -> any())}
+          LeaseManager.shared_opt()
+          | {:name, module()}
           | {:instances, [NoNoncense.init_opt()]}
           | {:enable_conflict_guard?, boolean()}
 
@@ -95,41 +89,36 @@ defmodule NoNoncense.MachineId do
     store_opts = [name: store_name, lease_manager: lm_name, instances: instances]
     lease_store = {LeaseStore, store_opts}
 
+    task_supervisor_name = Module.concat(name, :TaskSupervisor)
+    task_supervisor = {Task.Supervisor, name: task_supervisor_name}
+
     # LeaseManager
     lm_opts =
       opts
-      |> Keyword.drop([:enable_conflict_guard?])
+      |> Keyword.drop([:enable_conflict_guard?, :instances])
       |> Keyword.merge(
         name: lm_name,
-        instances: instances,
-        lease_store: store_name
+        lease_store: store_name,
+        task_supervisor: task_supervisor_name
       )
 
     lease_manager = {LeaseManager, lm_opts}
 
-    # ConflictGuard
+    # ConflictGuard talks to the store, which never blocks on strategy callbacks
     enable_cg? = Keyword.get(opts, :enable_conflict_guard?, true)
     cg_name = Module.concat(name, :ConflictGuard)
-    # ConflictGuard should not crash if LeaseManager is down
-    get_machine_id = safe_caller(fn -> LeaseManager.machine_id(lm_name) end, nil)
-    on_conflict = safe_caller(fn -> LeaseManager.lease_lost(lm_name, :conflict_guard) end, :ok)
-    cg_opts = [name: cg_name, on_conflict: on_conflict, machine_id: get_machine_id]
+
+    cg_opts = [
+      name: cg_name,
+      on_conflict: fn -> LeaseStore.lose(store_name, :conflict_guard) end,
+      machine_id: fn -> LeaseStore.machine_id(store_name) end
+    ]
+
     conflict_guard = if enable_cg?, do: {ConflictGuard, cg_opts}, else: nil
 
     # Supervisor
-    [lease_store, lease_manager, conflict_guard]
+    [lease_store, task_supervisor, lease_manager, conflict_guard]
     |> Enum.reject(&is_nil/1)
     |> Supervisor.init(strategy: :rest_for_one)
-  end
-
-  # create a function that can call a genserver that is down without crashing
-  defp safe_caller(fun, result_if_down) do
-    fn ->
-      try do
-        fun.()
-      catch
-        :exit, {:noproc, _} -> result_if_down
-      end
-    end
   end
 end

@@ -122,18 +122,6 @@ if Code.ensure_loaded?(Redix) do
           conn = {atom, node} when is_atom(atom) and is_atom(node) -> & &1.(conn)
           _ -> raise ArgumentError, "with_connection must be a fun/1 or a Redix connection"
         end
-        # create a wrapper to rescue/catch all exceptions and prevent crashing the manager
-        |> then(fn with_conn ->
-          fn fun ->
-            try do
-              with_conn.(fun)
-            rescue
-              exception -> {:error, {:exception, exception}}
-            catch
-              kind, reason -> {:error, {kind, reason}}
-            end
-          end
-        end)
 
       key = opts[:key] || @default_key
       {with_conn, key}

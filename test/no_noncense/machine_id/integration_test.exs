@@ -10,7 +10,7 @@ defmodule NoNoncense.MachineId.IntegrationTest do
   @moduletag :integration
 
   alias NoNoncense.MachineId
-  alias NoNoncense.MachineId.LeaseManager
+  alias NoNoncense.MachineId.LeaseStore
   alias NoNoncense.MachineId.Strategy.RedisLease
 
   setup_all do
@@ -41,12 +41,16 @@ defmodule NoNoncense.MachineId.IntegrationTest do
 
     start_supervised!(Supervisor.child_spec({MachineId, opts}, id: opts[:name]))
 
-    %{name: opts[:name], lease_manager: Module.concat(name, :LeaseManager)}
+    %{
+      name: opts[:name],
+      lease_manager: Module.concat(name, :LeaseManager),
+      lease_store: Module.concat(name, :LeaseStore)
+    }
   end
 
   defp renew(lease_manager) do
-    state = :sys.get_state(lease_manager)
-    send(lease_manager, {:renew, state.generation})
+    {:renew, ref} = :sys.get_state(lease_manager).timer
+    send(lease_manager, {:timeout, ref, :renew})
   end
 
   defp assert_eventually(assertion, attempts \\ 20)
@@ -65,14 +69,14 @@ defmodule NoNoncense.MachineId.IntegrationTest do
       db_a = unique_name("db")
       db_b = unique_name("db")
 
-      %{lease_manager: lm_a} =
+      %{lease_store: store_a} =
         start_machine_id!([instances: [[name: db_a]]], fixtures.conn, fixtures.key)
 
-      %{lease_manager: lm_b} =
+      %{lease_store: store_b} =
         start_machine_id!([instances: [[name: db_b]]], fixtures.conn, fixtures.key)
 
-      id_a = LeaseManager.machine_id(lm_a)
-      id_b = LeaseManager.machine_id(lm_b)
+      id_a = LeaseStore.machine_id(store_a)
+      id_b = LeaseStore.machine_id(store_b)
 
       assert id_a != id_b
       assert <<_::64>> = NoNoncense.nonce(db_a, 64)
@@ -81,13 +85,39 @@ defmodule NoNoncense.MachineId.IntegrationTest do
   end
 
   describe "renewal against a real backend" do
+    test "retries when the connection wrapper exits", fixtures do
+      attempts = start_supervised!({Agent, fn -> 0 end})
+
+      with_connection = fn fun ->
+        attempt = Agent.get_and_update(attempts, fn count -> {count, count + 1} end)
+        if attempt == 1, do: exit(:pool_timeout), else: fun.(fixtures.conn)
+      end
+
+      %{lease_manager: lm, lease_store: store} =
+        start_machine_id!(
+          [instances: [], strategy_opts: [with_connection: with_connection, key: fixtures.key]],
+          fixtures.conn,
+          fixtures.key
+        )
+
+      log =
+        capture_log(fn ->
+          renew(lm)
+          :sys.get_state(lm)
+        end)
+
+      assert log =~ "Lease renewal failed"
+      assert LeaseStore.machine_id(store) == 0
+      assert {:renew, _ref} = :sys.get_state(lm).timer
+    end
+
     test "a :renew tick refreshes the lease TTL in Redis", fixtures do
       db_name = unique_name("db")
 
-      %{lease_manager: lm} =
+      %{lease_manager: lm, lease_store: store} =
         start_machine_id!([instances: [[name: db_name]]], fixtures.conn, fixtures.key)
 
-      id = LeaseManager.machine_id(lm)
+      id = LeaseStore.machine_id(store)
 
       # let the TTL decay a bit in real time so a refreshed TTL is measurably higher
       Process.sleep(100)
@@ -95,10 +125,10 @@ defmodule NoNoncense.MachineId.IntegrationTest do
       {:ok, [ttl_before]} =
         Redix.command(fixtures.conn, ["HPTTL", fixtures.key, "FIELDS", "1", "#{id}"])
 
-      generation = :sys.get_state(lm).generation
+      {:renew, old_ref} = :sys.get_state(lm).timer
       renew(lm)
 
-      assert_eventually(fn -> assert :sys.get_state(lm).generation > generation end)
+      assert_eventually(fn -> refute :sys.get_state(lm).timer == {:renew, old_ref} end)
 
       {:ok, [ttl_after]} =
         Redix.command(fixtures.conn, ["HPTTL", fixtures.key, "FIELDS", "1", "#{id}"])
@@ -112,14 +142,14 @@ defmodule NoNoncense.MachineId.IntegrationTest do
          fixtures do
       db_name = unique_name("db")
 
-      %{lease_manager: lm} =
+      %{lease_manager: lm, lease_store: store} =
         start_machine_id!(
           [instances: [[name: db_name]]],
           fixtures.conn,
           fixtures.key
         )
 
-      id = LeaseManager.machine_id(lm)
+      id = LeaseStore.machine_id(store)
       assert <<_::64>> = NoNoncense.nonce(db_name, 64)
 
       # simulate another node ripping the lease out from under the running one
@@ -139,10 +169,10 @@ defmodule NoNoncense.MachineId.IntegrationTest do
     test "stopping the supervisor releases the id back to Redis", fixtures do
       db_name = unique_name("db")
 
-      %{name: sup_name, lease_manager: lm} =
+      %{name: sup_name, lease_store: store} =
         start_machine_id!([instances: [[name: db_name]]], fixtures.conn, fixtures.key)
 
-      id = LeaseManager.machine_id(lm)
+      id = LeaseStore.machine_id(store)
 
       stop_supervised!(sup_name)
 

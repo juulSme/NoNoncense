@@ -13,6 +13,10 @@ defmodule NoNoncense.MachineId.Strategy do
   to schedule both renewal and a local expiry deadline, with safety margins before the actual
   expiry. A shorter lease is treated as lost and its factories are disabled.
 
+  The lease manager limits how long it waits for each strategy callback (five seconds by default).
+  A timed-out callback may still have committed a write to an external system, so strategies must
+  tolerate ambiguous results and should configure their own backend timeouts as well.
+
   `renew/3` distinguishes two failure modes so callers can tell confirmed loss from mere uncertainty:
 
     * `{:error, :lost, reason}` - the strategy positively confirms the lease is no longer held

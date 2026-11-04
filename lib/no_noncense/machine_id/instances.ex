@@ -1,11 +1,14 @@
-defmodule NoNoncense.MachineId.LeaseManager.Instances do
+defmodule NoNoncense.MachineId.Instances do
   @moduledoc false
   import NoNoncense.State
 
   @type instance_opts :: [NoNoncense.init_opt()]
 
   @doc """
-  Initializes an instance unless its stored machine ID already matches the current lease.
+  Initializes an instance unless it is already enabled with the leased machine ID.
+
+  A disabled instance is initialized afresh instead of re-enabled: its counters would continue
+  from timestamps that another node holding the same ID may have used in the meantime.
   """
   @spec re_init(instance_opts()) :: :ok
   def re_init(opts) do
@@ -14,8 +17,7 @@ defmodule NoNoncense.MachineId.LeaseManager.Instances do
 
     case :persistent_term.get(name, nil) do
       state(machine_id: ^machine_id, enabled?: true) -> :ok
-      nil -> NoNoncense.init(opts)
-      state -> :persistent_term.put(name, state(state, enabled?: true, machine_id: machine_id))
+      _ -> NoNoncense.init(opts)
     end
   end
 

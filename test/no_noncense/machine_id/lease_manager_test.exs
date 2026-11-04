@@ -7,19 +7,21 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
   defmodule FakeStrategy do
     @behaviour NoNoncense.MachineId.Strategy
 
-    def start_agent(acquire, renew),
-      do: Agent.start_link(fn -> %{acquire: acquire, renew: renew} end)
+    def start_agent(acquire, renew) do
+      spec = {Agent, fn -> %{acquire: acquire, renew: renew} end}
+      ExUnit.Callbacks.start_supervised(Supervisor.child_spec(spec, id: make_ref()))
+    end
 
     @impl true
     def acquire(_lease_duration, opts) do
-      result = pop(opts[:agent], :acquire)
+      result = opts[:agent] |> pop(:acquire) |> resolve(:acquire, opts)
       if pid = opts[:notify], do: send(pid, {:acquire, result})
       result
     end
 
     @impl true
     def renew(_lease, _lease_duration, opts) do
-      result = pop(opts[:agent], :renew)
+      result = opts[:agent] |> pop(:renew) |> resolve(:renew, opts)
       if pid = opts[:notify], do: send(pid, {:renew, result})
       result
     end
@@ -42,6 +44,34 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
     @impl true
     def deterministic?(), do: false
 
+    defp resolve(:block, operation, opts) do
+      send(opts[:notify], {:blocked, operation, self()})
+
+      receive do
+        {:resume, result} -> result
+      end
+    end
+
+    defp resolve({:late_write, result}, :acquire, opts) do
+      notify = opts[:notify]
+
+      backend =
+        spawn(fn ->
+          receive do
+            :commit -> send(notify, {:committed, result})
+          end
+        end)
+
+      send(notify, {:backend, backend})
+
+      receive do
+        :backend_response -> result
+      end
+    end
+
+    defp resolve(:crash, _operation, _opts), do: exit(:strategy_crashed)
+    defp resolve(result, _operation, _opts), do: result
+
     defp pop(agent, key) do
       Agent.get_and_update(agent, fn state ->
         case Map.fetch!(state, key) do
@@ -50,6 +80,23 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         end
       end)
     end
+  end
+
+  defmodule FailingSqlRepo do
+    def update_all(_query, _updates) do
+      raise(DBConnection.ConnectionError, message: "connection closed")
+    end
+  end
+
+  defmodule FailingSqlRenewalStrategy do
+    use NoNoncense.MachineId.Strategy
+
+    @impl true
+    def acquire(_lease_duration, _opts), do: {:ok, 3, {3, "token"}, 100_000}
+
+    @impl true
+    defdelegate renew(lease, lease_duration, opts),
+      to: NoNoncense.MachineId.Strategy.SqlLease
   end
 
   defp unique_name(prefix), do: :"#{prefix}_#{System.unique_integer([:positive, :monotonic])}"
@@ -66,40 +113,55 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       )
     end
 
-    [lease_store: store]
+    task_supervisor = start_supervised!({Task.Supervisor, []})
+    [lease_store: store, task_supervisor: task_supervisor]
   end
 
   defp start_lease_manager!(opts) do
     test_pid = self()
     name = Keyword.get(opts, :name, unique_name("lm"))
+    restart = Keyword.get(opts, :restart, :temporary)
 
     dependencies = start_dependencies!(name, opts)
 
     opts =
       opts
+      |> Keyword.delete(:restart)
       |> Keyword.put_new(:name, name)
       |> Keyword.put_new(:lease_duration, 100_000)
       |> Keyword.put_new(:renew_interval, 100_000)
       |> Keyword.put_new(:on_lease_lost, fn reason -> send(test_pid, {:lease_lost, reason}) end)
       |> Keyword.merge(dependencies)
 
-    start_supervised!({LeaseManager, opts})
+    start_supervised!(Supervisor.child_spec({LeaseManager, opts}, restart: restart))
     name
   end
 
+  # For managers expected to fail during init; unwraps the child spec ExUnit adds to the reason
+  defp start_failing_manager(opts, dependencies) do
+    with_log(fn ->
+      {:error, {reason, _child_spec}} = start_supervised({LeaseManager, opts ++ dependencies})
+      {:error, reason}
+    end)
+  end
+
   defp renew(name) do
-    state = :sys.get_state(name)
-    send(name, {:renew, state.generation})
+    {:renew, ref} = :sys.get_state(name).timer
+    send(name, {:timeout, ref, :renew})
   end
 
   describe "initial acquisition" do
-    test "requires a strategy and lease store" do
+    test "requires a strategy, lease store and task supervisor" do
       assert_raise ArgumentError, ":strategy must be provided", fn ->
         LeaseManager.start_link(lease_store: unique_name("store"))
       end
 
       assert_raise ArgumentError, ":lease_store must be provided", fn ->
         LeaseManager.start_link(strategy: FakeStrategy)
+      end
+
+      assert_raise ArgumentError, ":task_supervisor must be provided", fn ->
+        LeaseManager.start_link(strategy: FakeStrategy, lease_store: unique_name("store"))
       end
     end
 
@@ -114,26 +176,24 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
           start_lease_manager!(strategy: FakeStrategy, strategy_opts: [agent: agent])
         end)
 
-      assert LeaseManager.machine_id(name) == 7
+      assert LeaseStore.machine_id(store_name(name)) == 7
     end
 
     test "fails startup when acquisition does not succeed before the timeout" do
       {:ok, agent} = FakeStrategy.start_agent([{:error, :down}], [{:ok, :lease, 100_000}])
-      Process.flag(:trap_exit, true)
       name = unique_name("lm")
       dependencies = start_dependencies!(name, [])
 
       {result, _log} =
-        with_log(fn ->
-          LeaseManager.start_link(
-            [
-              name: name,
-              strategy: FakeStrategy,
-              strategy_opts: [agent: agent],
-              acquire_timeout: 30
-            ] ++ dependencies
-          )
-        end)
+        start_failing_manager(
+          [
+            name: name,
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent],
+            acquire_timeout: 30
+          ],
+          dependencies
+        )
 
       assert {:error, :lease_acquisition_failed} = result
     end
@@ -144,20 +204,18 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       name = unique_name("lm")
       dependencies = start_dependencies!(name, instances: [[name: instance]])
       NoNoncense.init(machine_id: 7, name: instance)
-      Process.flag(:trap_exit, true)
 
       {result, _log} =
-        with_log(fn ->
-          LeaseManager.start_link(
-            [
-              name: name,
-              strategy: FakeStrategy,
-              strategy_opts: [agent: agent],
-              acquire_timeout: 0,
-              instances: [[name: instance]]
-            ] ++ dependencies
-          )
-        end)
+        start_failing_manager(
+          [
+            name: name,
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent],
+            acquire_timeout: 0,
+            instances: [[name: instance]]
+          ],
+          dependencies
+        )
 
       assert {:error, :lease_acquisition_failed} = result
       assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
@@ -165,66 +223,314 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
     test "does not retry acquisition after the deadline" do
       {:ok, agent} = FakeStrategy.start_agent([{:error, :down}], [{:ok, :lease, 100_000}])
-      Process.flag(:trap_exit, true)
       name = unique_name("lm")
       dependencies = start_dependencies!(name, [])
 
       {result, _log} =
-        with_log(fn ->
-          LeaseManager.start_link(
-            [
-              name: name,
-              strategy: FakeStrategy,
-              strategy_opts: [agent: agent, notify: self()],
-              acquire_timeout: 50
-            ] ++ dependencies
-          )
-        end)
+        start_failing_manager(
+          [
+            name: name,
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: self()],
+            acquire_timeout: 50
+          ],
+          dependencies
+        )
 
       assert {:error, :lease_acquisition_failed} = result
       assert_receive {:acquire, {:error, :down}}
       refute_receive {:acquire, _}, 20
     end
 
+    test "bounds a blocked acquisition by the overall startup deadline" do
+      {:ok, agent} = FakeStrategy.start_agent([:block], [])
+      name = unique_name("lm")
+      dependencies = start_dependencies!(name, [])
+      started_at = System.monotonic_time(:millisecond)
+
+      {result, _log} =
+        start_failing_manager(
+          [
+            name: name,
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: self()],
+            acquire_timeout: 60,
+            callback_timeout: 1_000
+          ],
+          dependencies
+        )
+
+      assert {:error, :lease_acquisition_failed} = result
+      assert System.monotonic_time(:millisecond) - started_at < 500
+      assert_received {:blocked, :acquire, worker}
+      refute Process.alive?(worker)
+    end
+
+    test "retries acquisition after a strategy worker crashes" do
+      {:ok, agent} = FakeStrategy.start_agent([:crash, {:ok, 7, :lease, 100_000}], [])
+
+      {name, _log} =
+        with_log(fn ->
+          start_lease_manager!(strategy: FakeStrategy, strategy_opts: [agent: agent])
+        end)
+
+      assert LeaseStore.machine_id(store_name(name)) == 7
+    end
+
+    test "ignores a backend write that completes after acquisition times out" do
+      {:ok, agent} =
+        FakeStrategy.start_agent(
+          [{:late_write, {:ok, 3, :abandoned, 100_000}}, {:ok, 4, :current, 100_000}],
+          []
+        )
+
+      {name, _log} =
+        with_log(fn ->
+          start_lease_manager!(
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: self()],
+            callback_timeout: 40,
+            acquire_timeout: 1_000
+          )
+        end)
+
+      assert_received {:backend, backend}
+      send(backend, :commit)
+      assert_receive {:committed, {:ok, 3, :abandoned, 100_000}}
+      assert LeaseStore.machine_id(store_name(name)) == 4
+      assert %{lease: :current} = LeaseStore.get(store_name(name))
+    end
+
+    test "falls back to acquisition when cached renewal times out" do
+      store = unique_name("store")
+      start_supervised!({LeaseStore, name: store})
+      LeaseStore.put(store, 12, :stored, 100_000, System.monotonic_time(:millisecond))
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 4, :replacement, 100_000}], [:block])
+
+      start_lease_manager!(
+        strategy: FakeStrategy,
+        strategy_opts: [agent: agent, notify: self()],
+        lease_store: store,
+        callback_timeout: 40
+      )
+
+      assert_received {:blocked, :renew, worker}
+      refute Process.alive?(worker)
+      assert LeaseStore.machine_id(store) == 4
+    end
+
     test "treats a granted TTL below the minimum as an immediate loss" do
       {:ok, agent} = FakeStrategy.start_agent([{:ok, 3, :lease1, 29_999}], [])
       test_pid = self()
-      Process.flag(:trap_exit, true)
       name = unique_name("lm")
       dependencies = start_dependencies!(name, [])
 
       {result, _log} =
-        with_log(fn ->
+        start_failing_manager(
+          [
+            name: name,
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: test_pid],
+            on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
+          ],
+          dependencies
+        )
+
+      assert {:error, :lease_acquisition_failed} = result
+      assert_receive {:lease_lost, :illegal_ttl}
+      assert_receive {:release, :lease1}
+    end
+
+    test "releases a rejected renewed token during startup" do
+      store = unique_name("store")
+      name = unique_name("lm")
+      start_supervised!({LeaseStore, name: store})
+      LeaseStore.put(store, 12, :stored, 100_000, System.monotonic_time(:millisecond))
+      dependencies = start_dependencies!(name, lease_store: store)
+      {:ok, agent} = FakeStrategy.start_agent([], [{:ok, :rotated, 29_999}])
+
+      {result, _log} =
+        start_failing_manager(
+          [name: name, strategy: FakeStrategy, strategy_opts: [agent: agent, notify: self()]],
+          dependencies
+        )
+
+      assert {:error, :lease_acquisition_failed} = result
+      assert_receive {:release, :rotated}
+      assert LeaseStore.get(store) == nil
+    end
+
+    test "disables cached factories before releasing a rejected startup renewal" do
+      instance = unique_name("nonce")
+      name = unique_name("lm")
+      dependencies = start_dependencies!(name, instances: [[name: instance]])
+      store = dependencies[:lease_store]
+      LeaseStore.put(store, 12, :stored, 100_000, System.monotonic_time(:millisecond))
+      {:ok, agent} = FakeStrategy.start_agent([], [{:ok, :rotated, 29_999}])
+      test_pid = self()
+
+      start_supervised!(
+        {Task,
+         fn ->
+           Process.flag(:trap_exit, true)
+
+           result =
+             LeaseManager.start_link(
+               [
+                 name: name,
+                 strategy: FakeStrategy,
+                 strategy_opts: [agent: agent, block_release: test_pid]
+               ] ++ dependencies
+             )
+
+           send(test_pid, {:startup_result, result})
+         end}
+      )
+
+      assert_receive {:release_blocked, :rotated, worker}
+      assert LeaseStore.get(store) == nil
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
+      refute_receive {:startup_result, _}, 20
+      send(worker, {:resume_release, :rotated})
+      assert_receive {:startup_result, {:error, :lease_acquisition_failed}}
+    end
+
+    test "waits for rejected startup lease release before failing" do
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 3, :rejected, 29_999}], [])
+      name = unique_name("lm")
+      dependencies = start_dependencies!(name, [])
+      test_pid = self()
+
+      task =
+        Task.async(fn ->
+          Process.flag(:trap_exit, true)
+
           LeaseManager.start_link(
             [
               name: name,
               strategy: FakeStrategy,
-              strategy_opts: [agent: agent],
-              on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
+              strategy_opts: [agent: agent, block_release: test_pid]
             ] ++ dependencies
           )
         end)
 
+      assert_receive {:release_blocked, :rejected, worker}
+      assert Task.yield(task, 20) == nil
+      send(worker, {:resume_release, :rejected})
+      assert {:error, :lease_acquisition_failed} = Task.await(task)
+    end
+
+    test "hands a rejected startup lease release to the background once the deadline is reached" do
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 3, :rejected, 29_999}], [])
+      name = unique_name("lm")
+      dependencies = start_dependencies!(name, [])
+      started_at = System.monotonic_time(:millisecond)
+
+      {result, _log} =
+        start_failing_manager(
+          [
+            name: name,
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, block_release: self()],
+            acquire_timeout: 60,
+            callback_timeout: 1_000
+          ],
+          dependencies
+        )
+
       assert {:error, :lease_acquisition_failed} = result
-      assert_receive {:lease_lost, :illegal_ttl}
+      assert System.monotonic_time(:millisecond) - started_at < 500
+      assert_received {:release_blocked, :rejected, worker}
+      refute Process.alive?(worker)
+      assert_receive {:release_blocked, :rejected, async_worker}
+      assert async_worker != worker
+      send(async_worker, {:resume_release, :rejected})
+    end
+
+    test "hands a rejected cached renewal release to the background once the deadline is reached" do
+      {:ok, agent} = FakeStrategy.start_agent([], [{:ok, :rotated, 29_999}])
+      name = unique_name("lm")
+      dependencies = start_dependencies!(name, [])
+
+      LeaseStore.put(
+        dependencies[:lease_store],
+        12,
+        :stored,
+        100_000,
+        System.monotonic_time(:millisecond)
+      )
+
+      started_at = System.monotonic_time(:millisecond)
+
+      {result, _log} =
+        start_failing_manager(
+          [
+            name: name,
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, block_release: self()],
+            acquire_timeout: 60,
+            callback_timeout: 1_000
+          ],
+          dependencies
+        )
+
+      assert {:error, :lease_acquisition_failed} = result
+      assert System.monotonic_time(:millisecond) - started_at < 500
+      assert_received {:release_blocked, :rotated, worker}
+      refute Process.alive?(worker)
+      assert_receive {:release_blocked, :rotated, async_worker}
+      assert async_worker != worker
+      send(async_worker, {:resume_release, :rotated})
+      assert LeaseStore.get(dependencies[:lease_store]) == nil
     end
 
     test "renews a stored lease before attempting a new acquisition" do
       store_name = unique_name("store")
       start_supervised!({LeaseStore, name: store_name})
-      LeaseStore.put(store_name, 12, :stored, 100_000)
+      LeaseStore.put(store_name, 12, :stored, 100_000, System.monotonic_time(:millisecond))
 
       {:ok, agent} =
         FakeStrategy.start_agent([{:error, :should_not_acquire}], [{:ok, :stored, 100_000}])
 
-      name =
-        start_lease_manager!(
-          strategy: FakeStrategy,
-          strategy_opts: [agent: agent],
-          lease_store: store_name
-        )
+      start_lease_manager!(
+        strategy: FakeStrategy,
+        strategy_opts: [agent: agent],
+        lease_store: store_name
+      )
 
-      assert LeaseManager.machine_id(name) == 12
+      assert LeaseStore.machine_id(store_name) == 12
+    end
+
+    test "acquires a fresh lease when the previous lease was lost while the manager was absent" do
+      store = unique_name("store")
+      name = unique_name("lm")
+      instance = unique_name("nonce")
+
+      start_supervised!(
+        {LeaseStore, name: store, lease_manager: name, instances: [[name: instance]]}
+      )
+
+      LeaseStore.put(store, 12, :previous, 100_000, System.monotonic_time(:millisecond))
+      assert :ok = LeaseStore.lose(store, :expired)
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
+
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 4, :replacement, 100_000}], [])
+
+      capture_log(fn ->
+        start_lease_manager!(
+          name: name,
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify: self()],
+          lease_store: store,
+          instances: [[name: instance]]
+        )
+      end)
+
+      assert_receive {:acquire, {:ok, 4, :replacement, 100_000}}
+      assert LeaseStore.machine_id(store) == 4
+      assert <<_::64>> = NoNoncense.nonce(instance, 64)
+      refute_receive {:lease_lost, :expired}, 20
+      refute_receive {:release, :previous}, 20
     end
 
     defmodule RaceStrategy do
@@ -236,14 +542,17 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
       @impl true
       def renew(_lease, _lease_duration, opts) do
-        send(opts[:lease_store], {:expired, opts[:generation]})
+        send(opts[:lease_store], {:timeout, opts[:timer], :expired})
         # block until the expired message above has been processed
         :sys.get_state(opts[:lease_store])
         {:ok, :renewed, 100_000}
       end
 
       @impl true
-      def release(_lease, _opts), do: :ok
+      def release(lease, opts) do
+        if opts[:notify], do: send(opts[:notify], {:release, lease})
+        :ok
+      end
 
       @impl true
       def deterministic?(), do: false
@@ -254,9 +563,10 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       name = unique_name("lm")
       test_pid = self()
       start_supervised!({LeaseStore, name: store_name, lease_manager: name})
-      LeaseStore.put(store_name, 12, :stored, 30_000)
+      task_supervisor = start_supervised!({Task.Supervisor, []})
+      LeaseStore.put(store_name, 12, :stored, 30_000, System.monotonic_time(:millisecond))
 
-      %{generation: generation} = :sys.get_state(store_name)
+      %{timer: timer} = :sys.get_state(store_name)
 
       {result, _log} =
         with_log(fn ->
@@ -264,22 +574,24 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
             {LeaseManager,
              name: name,
              strategy: RaceStrategy,
-             strategy_opts: [lease_store: store_name, generation: generation],
+             strategy_opts: [lease_store: store_name, timer: timer, notify: test_pid],
              lease_store: store_name,
+             task_supervisor: task_supervisor,
              on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end,
              instances: []}
           )
         end)
 
       assert {:ok, _pid} = result
-      assert LeaseManager.machine_id(name) == 4
+      assert LeaseStore.machine_id(store_name) == 4
+      assert_receive {:release, :renewed}
       refute_receive {:lease_lost, :expired}, 20
     end
 
     test "does not report an old stored lease as lost after acquiring a replacement" do
       store_name = unique_name("store")
       start_supervised!({LeaseStore, name: store_name})
-      LeaseStore.put(store_name, 12, :stored, 100_000)
+      LeaseStore.put(store_name, 12, :stored, 100_000, System.monotonic_time(:millisecond))
 
       {:ok, agent} =
         FakeStrategy.start_agent(
@@ -294,10 +606,9 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
           lease_store: store_name
         )
 
-      assert LeaseManager.machine_id(name) == 4
+      assert LeaseStore.machine_id(store_name) == 4
       refute_receive {:lease_lost, _}, 20
-      assert %{timers: timers} = :sys.get_state(name)
-      refute Map.has_key?(timers, :reacquire)
+      assert %{timer: {:renew, _ref}} = :sys.get_state(name)
     end
 
     test "disables factories when a stored lease cannot be renewed" do
@@ -310,31 +621,28 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         {LeaseStore, name: store_name, lease_manager: name, instances: [[name: instance]]}
       )
 
-      LeaseStore.put(store_name, 12, :stored, 100_000)
+      LeaseStore.put(store_name, 12, :stored, 100_000, System.monotonic_time(:millisecond))
       NoNoncense.init(machine_id: 12, name: instance)
 
       {:ok, agent} =
         FakeStrategy.start_agent([{:error, :down}], [{:error, :retry, :unavailable}])
 
-      Process.flag(:trap_exit, true)
-
       dependencies =
         start_dependencies!(name, lease_store: store_name, instances: [[name: instance]])
 
       {result, _log} =
-        with_log(fn ->
-          LeaseManager.start_link(
-            [
-              name: name,
-              strategy: FakeStrategy,
-              strategy_opts: [agent: agent],
-              lease_store: store_name,
-              instances: [[name: instance]],
-              acquire_timeout: 0,
-              on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
-            ] ++ dependencies
-          )
-        end)
+        start_failing_manager(
+          [
+            name: name,
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent],
+            lease_store: store_name,
+            instances: [[name: instance]],
+            acquire_timeout: 0,
+            on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
+          ],
+          dependencies
+        )
 
       assert {:error, :lease_acquisition_failed} = result
       assert_receive {:lease_lost, :timeout}
@@ -344,7 +652,73 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
   end
 
   describe "renewal and loss" do
-    test "renews from a generation-tagged timer message" do
+    test "retries a SQL connection exception without losing the confirmed lease" do
+      name =
+        start_lease_manager!(
+          strategy: FailingSqlRenewalStrategy,
+          strategy_opts: [repo: FailingSqlRepo]
+        )
+
+      lease = LeaseStore.get(store_name(name))
+
+      log =
+        capture_log(fn ->
+          renew(name)
+          :sys.get_state(name)
+        end)
+
+      assert log =~ "Lease renewal failed"
+      assert LeaseStore.get(store_name(name)) == lease
+      assert LeaseStore.machine_id(store_name(name)) == 3
+      assert %{timer: {:renew, _ref}} = :sys.get_state(name)
+    end
+
+    test "leaves the task supervisor running when the manager dies" do
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 3, :lease, 100_000}], [:block])
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify: self()]
+        )
+
+      supervisor = :sys.get_state(name).task_supervisor
+      renew(name)
+      assert_receive {:blocked, :renew, worker}
+      manager_ref = Process.monitor(Process.whereis(name))
+      Process.exit(Process.whereis(name), :kill)
+      assert_receive {:DOWN, ^manager_ref, :process, _, :killed}
+      assert Process.alive?(supervisor)
+      send(worker, {:resume, {:ok, :lease, 100_000}})
+    end
+
+    test "retries a timed-out renewal without extending the confirmed lease" do
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 3, :lease, 100_000}], [:block])
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify: self()],
+          callback_timeout: 40
+        )
+
+      lease = LeaseStore.get(store_name(name))
+
+      log =
+        capture_log(fn ->
+          renew(name)
+          assert_receive {:blocked, :renew, worker}
+          :sys.get_state(name)
+          refute Process.alive?(worker)
+        end)
+
+      assert log =~ "Lease renewal failed"
+      assert LeaseStore.get(store_name(name)) == lease
+      assert LeaseStore.machine_id(store_name(name)) == 3
+      assert %{timer: {:renew, _ref}} = :sys.get_state(name)
+    end
+
+    test "renews from a timer message" do
       {:ok, agent} =
         FakeStrategy.start_agent([{:ok, 3, :lease1, 100_000}], [{:ok, :lease2, 100_000}])
 
@@ -357,7 +731,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       renew(name)
 
       assert_receive {:renew, {:ok, :lease2, 100_000}}
-      assert LeaseManager.machine_id(name) == 3
+      assert LeaseStore.machine_id(store_name(name)) == 3
     end
 
     test "keeps factories available after an ambiguous renewal failure" do
@@ -381,9 +755,54 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         end)
 
       assert log =~ "Lease renewal failed"
-      assert LeaseManager.machine_id(name) == 3
+      assert LeaseStore.machine_id(store_name(name)) == 3
       assert <<_::64>> = NoNoncense.nonce(instance, 64)
       refute_receive {:lease_lost, _}, 20
+    end
+
+    test "releases a rejected renewed token after disabling factories" do
+      instance = unique_name("nonce")
+
+      {:ok, agent} =
+        FakeStrategy.start_agent([{:ok, 3, :original, 100_000}], [{:ok, :rotated, 29_999}])
+
+      name =
+        start_lease_manager!(
+          strategy: __MODULE__.DeterministicFakeStrategy,
+          strategy_opts: [agent: agent, notify: self()],
+          instances: [[name: instance]]
+        )
+
+      capture_log(fn ->
+        renew(name)
+        assert_receive {:lease_lost, :illegal_ttl}
+        assert_receive {:release, :rotated}
+      end)
+
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
+      assert LeaseStore.machine_id(store_name(name)) == nil
+    end
+
+    test "releases a rejected reacquisition before retrying" do
+      {:ok, agent} =
+        FakeStrategy.start_agent(
+          [{:ok, 3, :original, 100_000}, {:ok, 4, :rejected, 29_999}],
+          []
+        )
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify: self()]
+        )
+
+      capture_log(fn ->
+        assert :ok = LeaseStore.lose(store_name(name), :external)
+        assert_receive {:acquire, {:ok, 4, :rejected, 29_999}}
+        assert_receive {:release, :rejected}
+      end)
+
+      assert LeaseStore.machine_id(store_name(name)) == nil
     end
 
     test "disables factories, calls back, and reacquires after confirmed loss" do
@@ -421,7 +840,9 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
       send(name, :resume_reacquisition)
       assert_receive {:acquire, {:ok, 4, :lease2, 100_000}}
-      assert LeaseManager.machine_id(name) == 4
+      # the manager has stored the lease once it has handled the timer message
+      :sys.get_state(name)
+      assert LeaseStore.machine_id(store_name(name)) == 4
       assert <<_::64>> = NoNoncense.nonce(instance, 64)
     end
 
@@ -466,8 +887,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
       assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
       refute_receive {:acquire, _}, 20
-      assert %{timers: timers} = :sys.get_state(name)
-      refute Map.has_key?(timers, :reacquire)
+      assert %{timer: nil} = :sys.get_state(name)
     end
 
     test "handles externally signalled loss through the same lifecycle" do
@@ -490,7 +910,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
       log =
         capture_log(fn ->
-          task = Task.async(fn -> LeaseManager.lease_lost(name) end)
+          task = Task.async(fn -> LeaseStore.lose(store_name(name), :external) end)
           assert_receive {:lease_lost, :external}
           assert_receive {:release, :lease1}
           assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
@@ -517,9 +937,15 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       assert_receive {:acquire, {:ok, 3, :lease1, 100_000}}
 
       capture_log(fn ->
-        assert :ok = LeaseManager.lease_lost(name)
+        assert :ok = LeaseStore.lose(store_name(name), :external)
         assert_receive {:release_blocked, :lease1, release_pid}
         assert_receive {:acquire, {:ok, 4, :lease2, 100_000}}
+        :sys.get_state(name)
+        assert LeaseStore.machine_id(store_name(name)) == 4
+        supervisor = :sys.get_state(name).task_supervisor
+        children = Task.Supervisor.children(supervisor)
+        assert release_pid in children
+        assert length(children) == 2
         send(release_pid, {:resume_release, :lease1})
       end)
     end
@@ -529,9 +955,9 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
     # renew fires 10s before the earlier of the TTL and renew_interval margins, expired fires
     # 10s before actual TTL expiry - leaving a 10s gap for retries between the two
     defp scheduled_delays(name) do
-      %{timers: timers} = :sys.get_state(name)
+      %{timer: {:renew, renew_timer}} = :sys.get_state(name)
       %{timer: expiration_timer} = :sys.get_state(store_name(name))
-      {Process.read_timer(timers[:renew]), Process.read_timer(expiration_timer)}
+      {Process.read_timer(renew_timer), Process.read_timer(expiration_timer)}
     end
 
     test "renew and expired are scheduled off the granted TTL when it is the limiting factor" do
@@ -568,6 +994,23 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
   end
 
   describe "shutdown" do
+    test "bounds a blocked best-effort release" do
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 3, :lease, 100_000}], [])
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, block_release: self()],
+          callback_timeout: 40,
+          restart: :temporary
+        )
+
+      task = Task.async(fn -> GenServer.stop(name, :normal) end)
+      assert_receive {:release_blocked, :lease, worker}
+      assert :ok = Task.await(task, 500)
+      refute Process.alive?(worker)
+    end
+
     test "disables factories before releasing a currently held lease" do
       instance = unique_name("nonce")
 
@@ -594,7 +1037,8 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       name =
         start_lease_manager!(
           strategy: FakeStrategy,
-          strategy_opts: [agent: agent, block_release: self()]
+          strategy_opts: [agent: agent, block_release: self()],
+          restart: :temporary
         )
 
       task = Task.async(fn -> GenServer.stop(name, :normal) end)

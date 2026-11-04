@@ -45,8 +45,8 @@ if Code.ensure_loaded?(Ecto.Migration) do
     #     that point there is no existing token to check against (fresh/expired rows can have
     #     `token: nil`, and SQL's `=` never matches `NULL`). Once a row is claimed, `renew/3` and
     #     `release/2` instead match on `token` alone - it's the stable identity of *this specific*
-    #     acquisition, since (unlike `lock_version`) it is never rotated by renew or release, only
-    #     by a fresh `claim/4`.
+    #     acquisition. Renew preserves it; release clears it so delayed renewals cannot revive a
+    #     released lease. A fresh `claim/4` generates a new token, making stale releases a no-op.
     #   * Not matching on `lock_version` in `renew/3` is deliberate, not an oversight: `lock_version`
     #     is bumped (via `inc:`) on every successful renew, so if a renewal commits but its
     #     response is lost (ambiguous failure), a caller retrying with its last-known lease would
@@ -59,7 +59,6 @@ if Code.ensure_loaded?(Ecto.Migration) do
     #     Normal usage (separate calls, no explicit transaction) is unaffected.
     alias __MODULE__.NoNoncenseLease
     import Ecto.Query
-    require Logger
 
     use NoNoncense.MachineId.Strategy
 
@@ -79,18 +78,14 @@ if Code.ensure_loaded?(Ecto.Migration) do
     def acquire(lease_duration, opts) do
       {repo, table} = process_opts(opts)
 
-      fn ->
-        from(l in {table, NoNoncenseLease},
-          where: l.expires_at < db_now(),
-          order_by: l.id,
-          limit: 5
-        )
-        |> repo.all()
-      end
-      |> catch_connection_error()
+      from(l in {table, NoNoncenseLease},
+        where: l.expires_at < db_now(),
+        order_by: l.id,
+        limit: 5
+      )
+      |> repo.all()
       |> case do
         [] -> {:error, :exhausted}
-        {:error, _} = err -> err
         available -> claim(available, repo, table, lease_duration)
       end
     end
@@ -111,7 +106,6 @@ if Code.ensure_loaded?(Ecto.Migration) do
       |> case do
         :ok -> {:ok, id, {id, token}, lease_duration}
         {:error, :update_failed} -> claim(rest, repo, table, lease_duration)
-        error -> error
       end
     end
 
@@ -127,7 +121,6 @@ if Code.ensure_loaded?(Ecto.Migration) do
       |> case do
         :ok -> {:ok, {id, token}, lease_duration}
         {:error, :update_failed} -> {:error, :lost, :expired}
-        {:error, msg} -> {:error, :retry, msg}
       end
     end
 
@@ -186,24 +179,9 @@ if Code.ensure_loaded?(Ecto.Migration) do
     end
 
     defp update_all(query, repo) do
-      fn ->
-        repo.update_all(query, [])
-        |> case do
-          {1, _} -> :ok
-          {0, _} -> {:error, :update_failed}
-        end
-      end
-      |> catch_connection_error()
-    end
-
-    defp catch_connection_error(fun) do
-      try do
-        fun.()
-      rescue
-        e in [DBConnection.ConnectionError] ->
-          msg = "unexpected repo result: #{inspect(e)}"
-          Logger.warning(msg)
-          {:error, msg}
+      case repo.update_all(query, []) do
+        {1, _} -> :ok
+        {0, _} -> {:error, :update_failed}
       end
     end
   end
