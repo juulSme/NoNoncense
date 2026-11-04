@@ -83,11 +83,11 @@ for the event names, measurements, and metadata.
 ## Benchmarks
 
 ```
-On Debian Bookworm, AMD 9700X (8C 16T), 32GB, 990 Pro.
+On Debian Trixie, AMD 9950X, 32GB, 990 Pro
 
 nonce(128)                       1 task     65_238_805 ops/s
 nonce(96)                        1 task     50_140_765 ops/s
-nonce(64)                        1 task     24_389_379 ops/s
+nonce(64)                        1 task     25_841_768 ops/s
 sortable_nonce(128)              1 task     21_627_212 ops/s
 sortable_nonce(96)               1 task     20_838_522 ops/s
 encrypted_nonce(128) AES         1 task      8_918_276 ops/s
@@ -100,26 +100,26 @@ strong_rand_bytes(16)            1 task      2_830_500 ops/s
 encrypted_nonce(64) 3DES         1 task      1_194_550 ops/s
 encrypted_nonce(96) 3DES         1 task      1_130_135 ops/s
 
-nonce(128)                       4 tasks    67_479_380 ops/s
-nonce(96)                        4 tasks    64_420_798 ops/s
+nonce(96)                        4 tasks    78_172_237 ops/s
+nonce(128)                       4 tasks    77_448_349 ops/s
+nonce(64)                        4 tasks    69_107_760 ops/s
 sortable_nonce(128)              4 tasks    60_862_312 ops/s
-nonce(64)                        4 tasks    60_386_514 ops/s
 sortable_nonce(96)               4 tasks    60_149_950 ops/s
 encrypted_nonce(128) AES         4 tasks    28_425_854 ops/s
-encrypted_nonce(96) Speck        4 tasks    20_922_439 ops/s
-encrypted_nonce(64) Speck        4 tasks    19_996_064 ops/s
-encrypted_nonce(64) Blowfish     4 tasks    19_426_322 ops/s
+encrypted_nonce(96) Speck        4 tasks    22_063_947 ops/s
+encrypted_nonce(64) Speck        4 tasks    21_788_004 ops/s
+encrypted_nonce(64) Blowfish     4 tasks    20_217_760 ops/s
 encrypted_nonce(96) Blowfish     4 tasks    14_555_706 ops/s
 sortable_nonce(64)               4 tasks     8_192_138 ops/s <- throttled
 strong_rand_bytes(16)            4 tasks     7_408_921 ops/s
 encrypted_nonce(64) 3DES         4 tasks     4_263_336 ops/s
 encrypted_nonce(96) 3DES         4 tasks     4_058_711 ops/s
 
-nonce(128)                      16 tasks    66_651_927 ops/s
-encrypted_nonce(128) AES        16 tasks    57_043_233 ops/s
+nonce(128)                      16 tasks   108_470_965 ops/s
+encrypted_nonce(128) AES        16 tasks    58_772_315 ops/s
 sortable_nonce(96)              16 tasks    55_579_818 ops/s
 encrypted_nonce(64) Blowfish    16 tasks    45_025_885 ops/s
-encrypted_nonce(64) Speck       16 tasks    28_533_885 ops/s
+encrypted_nonce(64) Speck       16 tasks    37_933_322 ops/s
 encrypted_nonce(64) 3DES        16 tasks    10_016_360 ops/s
 ```
 
