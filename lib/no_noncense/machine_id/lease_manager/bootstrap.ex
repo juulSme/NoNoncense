@@ -35,13 +35,20 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   # nothing stale remains while a replacement is acquired. It must be `discard`, not `lose`: the
   # manager is already registered, and a loss notification would start its loss handling.
   defp renew_stored(state, deadline) do
-    with %{} = lease <- LeaseStore.get(state.lease_store),
-         {:ok, _renewed} = ok <-
-           StrategyCall.renew(state, lease.lease, :store, deadline: deadline) do
-      ok
-    else
+    case LeaseStore.get(state.lease_store) do
+      %{} = lease -> attempt_renew(state, lease, deadline)
+      nil -> LeaseStore.discard(state.lease_store) && nil
+    end
+  end
+
+  defp attempt_renew(state, lease, deadline) do
+    case StrategyCall.renew(state, lease.lease, :store, deadline: deadline) do
+      {:ok, _renewed} = ok ->
+        ok
+
       failure ->
         LeaseStore.discard(state.lease_store)
+        StrategyCall.release_async(state, lease.lease)
         failure
     end
   end

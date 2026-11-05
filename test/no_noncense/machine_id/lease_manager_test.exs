@@ -602,11 +602,12 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       name =
         start_lease_manager!(
           strategy: FakeStrategy,
-          strategy_opts: [agent: agent],
+          strategy_opts: [agent: agent, notify: self()],
           lease_store: store_name
         )
 
       assert LeaseStore.machine_id(store_name) == 4
+      assert_receive {:release, :stored}
       refute_receive {:lease_lost, _}, 20
       assert %{timer: {:renew, _ref}} = :sys.get_state(name)
     end
