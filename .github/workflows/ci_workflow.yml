@@ -38,7 +38,7 @@ jobs:
           # soft support floor
           - elixir: 1.16.x
             otp: 25.x
-            os: ubuntu-latest
+            os: ubuntu-24.04
             command: mix test
           # hard support floor (current minus 2)
           - elixir: 1.18.x
