@@ -160,6 +160,9 @@ defmodule NoNoncense.MachineId.LeaseStore do
   def init(state) do
     state = Map.merge(%{lease: nil, timer: nil, lease_manager: nil, instances: []}, state)
 
+    # makes supervisor shutdowns call terminate/2
+    Process.flag(:trap_exit, true)
+
     # Factories may have survived a manager restart but cannot run until a lease is confirmed.
     Enum.each(state.instances, &Instances.disable/1)
     {:ok, state}
@@ -213,6 +216,13 @@ defmodule NoNoncense.MachineId.LeaseStore do
 
   # A cancelled timer can still have delivered its message; only the current timer may expire the lease
   def handle_info({:timeout, _stale_timer, :expired}, state), do: {:noreply, state}
+
+  # Without the store there is no expiry timer, so factories must not outlive it
+  @impl true
+  def terminate(_reason, state) do
+    clear(state, nil)
+    :ok
+  end
 
   # Rejects TTLs below the minimum before doing arithmetic on them.
   defp build(_machine_id, _lease, ttl_ms, _started_at)

@@ -246,4 +246,16 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
 
     assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
   end
+
+  test "disables factories when the supervisor shuts the store down" do
+    instance = unique_name("nonce")
+    %{name: name} = start_store!(instances: [[name: instance]])
+
+    assert {:ok, _lease} = put(name, 7, :lease, 30_000)
+    assert <<_::64>> = NoNoncense.nonce(instance, 64)
+
+    stop_supervised!(LeaseStore)
+
+    assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
+  end
 end
