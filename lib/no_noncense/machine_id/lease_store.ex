@@ -34,9 +34,10 @@ defmodule NoNoncense.MachineId.LeaseStore do
     * `{:error, :expired}` - the call took long enough to use up the validity window.
     * `{:error, :lost}` - `renew/4` only: no lease is held, or it has already expired locally.
 
-  A refused `put/5` changes nothing. A refused `renew/4` keeps the old lease, which then runs out
-  on its own schedule. The caller still holds the refused lease with the strategy and is
-  responsible for releasing it.
+  A refused `put/5` changes nothing. A refused `renew/4` leaves the previously stored lease
+  untouched until the caller explicitly clears it (for example via `lose/2` or `discard/1`) or its
+  own timer expires. The caller still holds the refused lease with the strategy and is responsible
+  for releasing it.
 
   ## Losing a lease
 
@@ -194,7 +195,7 @@ defmodule NoNoncense.MachineId.LeaseStore do
   end
 
   # Renewal keeps the machine ID and only swaps the token and expiry, so factories stay enabled.
-  # A rejected renewal keeps the old lease, which then runs out on its own timer.
+  # A rejected renewal leaves the old lease in place until the caller clears it or its timer fires.
   def handle_call({:renew, lease, ttl_ms, started_at}, _from, %{lease: current} = state) do
     if valid?(current) do
       case build(current.machine_id, lease, ttl_ms, started_at) do

@@ -29,8 +29,8 @@ defmodule NoNoncense.MachineId.ConflictGuard do
 
   `NoNoncense.MachineId` starts `ConflictGuard` by default. Pass
   `enable_conflict_guard?: false` to disable it. When enabled through `NoNoncense.MachineId`,
-  the supervisor derives the guard's name and resolves the machine ID through its lease manager.
-  A conflict signals the lease manager that its lease was lost:
+  the supervisor derives the guard's name and resolves the machine ID through its lease store.
+  A conflict signals the lease store that its lease was lost:
 
       {NoNoncense.MachineId,
        strategy: NoNoncense.MachineId.Strategy.HostIdentifiers,
