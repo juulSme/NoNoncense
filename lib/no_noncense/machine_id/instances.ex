@@ -17,6 +17,8 @@ defmodule NoNoncense.MachineId.Instances do
 
     case :persistent_term.get(name, nil) do
       state(machine_id: ^machine_id, enabled?: true) -> :ok
+      # sleep prevents same-millisecond reacquisition from repeating previous state's nonces
+      state(machine_id: ^machine_id) -> Process.sleep(1) && NoNoncense.init(opts)
       _ -> NoNoncense.init(opts)
     end
   end

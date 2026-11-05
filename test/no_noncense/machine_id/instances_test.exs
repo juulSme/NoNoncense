@@ -36,4 +36,15 @@ defmodule NoNoncense.MachineId.InstancesTest do
     state(machine_id: 4, counters_ref: counters) = :persistent_term.get(name)
     refute counters == old_counters
   end
+
+  test "reinitializes a disabled instance strictly after the previous init_at" do
+    name = unique_name()
+    :ok = NoNoncense.init(name: name, machine_id: 3)
+    state(init_at: old_init_at) = :persistent_term.get(name)
+    Instances.disable(name: name)
+
+    assert :ok = Instances.re_init(name: name, machine_id: 3)
+    state(init_at: init_at) = :persistent_term.get(name)
+    assert init_at > old_init_at
+  end
 end
