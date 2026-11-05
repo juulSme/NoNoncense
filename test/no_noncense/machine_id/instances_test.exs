@@ -1,6 +1,8 @@
 defmodule NoNoncense.MachineId.InstancesTest do
   use ExUnit.Case, async: true
+  import Bitwise
   import NoNoncense.State
+  use NoNoncense.Constants
 
   alias NoNoncense.MachineId.Instances
 
@@ -46,5 +48,49 @@ defmodule NoNoncense.MachineId.InstancesTest do
     assert :ok = Instances.re_init(name: name, machine_id: 3)
     state(init_at: init_at) = :persistent_term.get(name)
     assert init_at > old_init_at
+  end
+
+  test "waits past reserved 64-bit counter timestamps" do
+    name = unique_name()
+    :ok = NoNoncense.init(name: name, machine_id: 3)
+    state(init_at: old_init_at, counters_ref: counters) = :persistent_term.get(name)
+
+    # a burst of 64-bit nonces that reserved timestamps 5ms into the future
+    reserved_ts = old_init_at + 5
+    :atomics.put(counters, @counter64_idx, (reserved_ts <<< @count_bits_64) + 42)
+    Instances.disable(name: name)
+
+    assert :ok = Instances.re_init(name: name, machine_id: 3)
+    state(init_at: init_at) = :persistent_term.get(name)
+    assert init_at > reserved_ts
+  end
+
+  test "waits past the last sortable counter timestamp" do
+    name = unique_name()
+    :ok = NoNoncense.init(name: name, machine_id: 3)
+    state(init_at: old_init_at, counters_ref: counters) = :persistent_term.get(name)
+
+    reserved_ts = old_init_at + 5
+    :atomics.put(counters, @sortable_counter_idx, (reserved_ts <<< @non_ts_bits_64) + 42)
+    Instances.disable(name: name)
+
+    assert :ok = Instances.re_init(name: name, machine_id: 3)
+    state(init_at: init_at) = :persistent_term.get(name)
+    assert init_at > reserved_ts
+  end
+
+  test "waits past timestamps used by an intermediate machine ID (A -> B -> A)" do
+    name = unique_name()
+    :ok = NoNoncense.init(name: name, machine_id: 3)
+
+    assert :ok = Instances.re_init(name: name, machine_id: 4)
+    state(init_at: b_init_at, counters_ref: b_counters) = :persistent_term.get(name)
+
+    reserved_ts = b_init_at + 5
+    :atomics.put(b_counters, @sortable_counter_idx, (reserved_ts <<< @non_ts_bits_64) + 42)
+
+    assert :ok = Instances.re_init(name: name, machine_id: 3)
+    state(machine_id: 3, init_at: init_at) = :persistent_term.get(name)
+    assert init_at > reserved_ts
   end
 end
