@@ -43,10 +43,12 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
 
   defp attempt_renew(state, lease, deadline) do
     case StrategyCall.renew(state, lease.lease, :store, deadline: deadline) do
-      {:ok, _renewed} = ok ->
+      {:ok, renewed = %{machine_id: machine_id}} = ok ->
+        Logger.info("Lease of ID #{machine_id} resumed from store, #{valid_for(renewed)}.")
         ok
 
       failure ->
+        Logger.debug("Failed to renew stored ID #{lease.machine_id}: #{inspect(failure)}")
         LeaseStore.discard(state.lease_store)
         StrategyCall.release_async(state, lease.lease)
         failure
@@ -57,6 +59,7 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   defp acquire_new_until(state, deadline) do
     with {_, false} <- {:deadline_expired?, deadline_expired?(deadline)},
          {:ok, lease} <- StrategyCall.acquire(state, :initial, deadline: deadline) do
+      Logger.info("Lease of ID #{lease.machine_id} acquired, #{valid_for(lease)}.")
       {:ok, lease}
     else
       {:deadline_expired?, true} ->
@@ -93,5 +96,6 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   defp time_left(:infinity), do: :infinity
   defp time_left(deadline), do: max(0, deadline - now_mono())
 
+  defp valid_for(lease), do: "valid for #{LeaseStore.remaining_ms(lease)}ms locally"
   defp now_mono(), do: System.monotonic_time(:millisecond)
 end
