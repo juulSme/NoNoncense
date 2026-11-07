@@ -20,7 +20,8 @@ defmodule NoNoncense.MachineId.ConflictGuardTest do
   test "ignores peers with a different machine ID", %{pid: pid} do
     GenServer.cast(pid, {:id_from, :peer, %{machine_id: 1, init_at: 0}})
 
-    refute_receive :conflict, 50
+    :sys.get_state(pid)
+    refute_received :conflict
   end
 
   test "does not act when an older node detects the conflict", %{pid: pid} do
@@ -29,7 +30,8 @@ defmodule NoNoncense.MachineId.ConflictGuardTest do
     log =
       capture_log(fn ->
         GenServer.cast(pid, {:id_from, :peer, %{machine_id: 0, init_at: init_at + 1}})
-        refute_receive :conflict, 50
+        :sys.get_state(pid)
+        refute_received :conflict
       end)
 
     assert log =~ "it will resolve the conflict"
@@ -63,7 +65,8 @@ defmodule NoNoncense.MachineId.ConflictGuardTest do
 
     GenServer.cast(pid, {:id_from, :peer, %{machine_id: 0, init_at: 0}})
 
-    refute_receive :conflict, 50
+    :sys.get_state(pid)
+    refute_received :conflict
   end
 
   test "broadcasts the resolved machine ID from a getter" do

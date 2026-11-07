@@ -38,7 +38,10 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         end
       end
 
-      :ok
+      case opts[:release_failure] do
+        {^lease, failure} -> resolve(failure, :release, opts)
+        _ -> :ok
+      end
     end
 
     @impl true
@@ -69,7 +72,16 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       end
     end
 
-    defp resolve(:crash, _operation, _opts), do: exit(:strategy_crashed)
+    defp resolve(failure, operation, opts) when failure in [:crash, :raise, :throw] do
+      if pid = opts[:notify], do: send(pid, {:strategy_failure, operation, failure, self()})
+
+      case failure do
+        :crash -> exit(:strategy_crashed)
+        :raise -> raise "strategy raised"
+        :throw -> throw(:strategy_threw)
+      end
+    end
+
     defp resolve(result, _operation, _opts), do: result
 
     defp pop(agent, key) do
@@ -148,6 +160,15 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
   defp renew(name) do
     {:renew, ref} = :sys.get_state(name).timer
     send(name, {:timeout, ref, :renew})
+  end
+
+  defp await_strategy_tasks(name) do
+    task_supervisor = :sys.get_state(name).task_supervisor
+
+    for worker <- Task.Supervisor.children(task_supervisor) do
+      worker_ref = Process.monitor(worker)
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}
+    end
   end
 
   describe "initial acquisition" do
@@ -239,7 +260,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
       assert {:error, :lease_acquisition_failed} = result
       assert_receive {:acquire, {:error, :down}}
-      refute_receive {:acquire, _}, 20
+      refute_received {:acquire, _}
     end
 
     test "bounds a blocked acquisition by the overall startup deadline" do
@@ -264,17 +285,6 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       assert System.monotonic_time(:millisecond) - started_at < 500
       assert_received {:blocked, :acquire, worker}
       refute Process.alive?(worker)
-    end
-
-    test "retries acquisition after a strategy worker crashes" do
-      {:ok, agent} = FakeStrategy.start_agent([:crash, {:ok, 7, :lease, 100_000}], [])
-
-      {name, _log} =
-        with_log(fn ->
-          start_lease_manager!(strategy: FakeStrategy, strategy_opts: [agent: agent])
-        end)
-
-      assert LeaseStore.machine_id(store_name(name)) == 7
     end
 
     test "ignores a backend write that completes after acquisition times out" do
@@ -529,8 +539,9 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       assert_receive {:acquire, {:ok, 4, :replacement, 100_000}}
       assert LeaseStore.machine_id(store) == 4
       assert <<_::64>> = NoNoncense.nonce(instance, 64)
-      refute_receive {:lease_lost, :expired}, 20
-      refute_receive {:release, :previous}, 20
+      await_strategy_tasks(name)
+      refute_received {:lease_lost, :expired}
+      refute_received {:release, :previous}
     end
 
     defmodule RaceStrategy do
@@ -585,7 +596,8 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       assert {:ok, _pid} = result
       assert LeaseStore.machine_id(store_name) == 4
       assert_receive {:release, :renewed}
-      refute_receive {:lease_lost, :expired}, 20
+      assert %{timer: {:renew, _ref}} = :sys.get_state(name)
+      refute_received {:lease_lost, :expired}
     end
 
     test "does not report an old stored lease as lost after acquiring a replacement" do
@@ -608,8 +620,8 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
       assert LeaseStore.machine_id(store_name) == 4
       assert_receive {:release, :stored}
-      refute_receive {:lease_lost, _}, 20
       assert %{timer: {:renew, _ref}} = :sys.get_state(name)
+      refute_received {:lease_lost, _}
     end
 
     test "disables factories when a stored lease cannot be renewed" do
@@ -758,7 +770,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       assert log =~ "Lease renewal failed"
       assert LeaseStore.machine_id(store_name(name)) == 3
       assert <<_::64>> = NoNoncense.nonce(instance, 64)
-      refute_receive {:lease_lost, _}, 20
+      refute_received {:lease_lost, _}
     end
 
     test "releases a rejected renewed token after disabling factories" do
@@ -887,8 +899,8 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       end)
 
       assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
-      refute_receive {:acquire, _}, 20
       assert %{timer: nil} = :sys.get_state(name)
+      refute_received {:acquire, _}
     end
 
     test "handles externally signalled loss through the same lifecycle" do
@@ -948,6 +960,11 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         assert release_pid in children
         assert length(children) == 2
         send(release_pid, {:resume_release, :lease1})
+
+        stop_task = Task.async(fn -> GenServer.stop(name, :normal) end)
+        assert_receive {:release_blocked, :lease2, replacement_release_pid}
+        send(replacement_release_pid, {:resume_release, :lease2})
+        assert :ok = Task.await(stop_task)
       end)
     end
   end

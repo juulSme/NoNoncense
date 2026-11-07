@@ -146,7 +146,6 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:ok, [ttl_before]} =
                Redix.command(fixtures.conn, ["HPTTL", fixtures.key, "FIELDS", "1", "0"])
 
-      Process.sleep(50)
       assert {:ok, ^lease, 20_000} = RedisLease.renew(lease, 20_000, fixtures.opts)
 
       assert {:ok, [ttl_after]} =

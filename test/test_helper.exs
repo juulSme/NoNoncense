@@ -1,6 +1,7 @@
 Mimic.copy(Redix)
 Mimic.copy(MyApp.PgRepo)
 Mimic.copy(MyApp.MysqlRepo)
+Mimic.copy(System)
 
 ExUnit.start(exclude: [:very_slow])
 

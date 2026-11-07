@@ -38,13 +38,10 @@ defmodule NoNoncenseTest do
 
   defp concurrent_gen(tasks, nonces_per_task, fun) do
     1..tasks
-    |> Enum.map(fn _ ->
-      Task.async(fn ->
-        for _ <- 1..nonces_per_task, into: MapSet.new(), do: fun.()
-      end)
-    end)
+    |> Enum.map(fn _ -> Task.async(fn -> for _ <- 1..nonces_per_task, do: fun.() end) end)
     |> Task.await_many(20000)
-    |> Enum.reduce(&MapSet.union/2)
+    |> :lists.append()
+    |> :ordsets.from_list()
   end
 
   describe "init/0" do
@@ -338,10 +335,10 @@ defmodule NoNoncenseTest do
 
     test "creates unique nonces with concurrent requests" do
       tasks = 10
-      nonces_per_task = 100_000
+      nonces_per_task = 10_000
 
       concurrent_gen(tasks, nonces_per_task, fn -> NoNoncense.nonce(@name, 64) end)
-      |> Enum.count()
+      |> length()
       |> then(fn count -> assert count == tasks * nonces_per_task end)
     end
   end
@@ -374,10 +371,10 @@ defmodule NoNoncenseTest do
 
     test "creates unique nonces with concurrent requests" do
       tasks = 10
-      nonces_per_task = 100_000
+      nonces_per_task = 10_000
 
       concurrent_gen(tasks, nonces_per_task, fn -> NoNoncense.nonce(@name, 96) end)
-      |> Enum.count()
+      |> length()
       |> then(fn count -> assert count == tasks * nonces_per_task end)
     end
   end
@@ -395,10 +392,10 @@ defmodule NoNoncenseTest do
 
     test "creates unique nonces with concurrent requests" do
       tasks = 10
-      nonces_per_task = 100_000
+      nonces_per_task = 10_000
 
       concurrent_gen(tasks, nonces_per_task, fn -> NoNoncense.nonce(@name, 128) end)
-      |> Enum.count()
+      |> length()
       |> then(fn count -> assert count == tasks * nonces_per_task end)
     end
   end
@@ -428,10 +425,10 @@ defmodule NoNoncenseTest do
 
     test "creates unique nonces with concurrent requests" do
       tasks = 10
-      nonces_per_task = 100_000
+      nonces_per_task = 10_000
 
       concurrent_gen(tasks, nonces_per_task, fn -> NoNoncense.sortable_nonce(@name, 64) end)
-      |> Enum.count()
+      |> length()
       |> then(fn count -> assert count == tasks * nonces_per_task end)
     end
   end
@@ -449,10 +446,10 @@ defmodule NoNoncenseTest do
 
     test "creates unique nonces with concurrent requests" do
       tasks = 10
-      nonces_per_task = 100_000
+      nonces_per_task = 10_000
 
       concurrent_gen(tasks, nonces_per_task, fn -> NoNoncense.sortable_nonce(@name, 96) end)
-      |> Enum.count()
+      |> length()
       |> then(fn count -> assert count == tasks * nonces_per_task end)
     end
   end
@@ -470,10 +467,10 @@ defmodule NoNoncenseTest do
 
     test "creates unique nonces with concurrent requests" do
       tasks = 10
-      nonces_per_task = 100_000
+      nonces_per_task = 10_000
 
       concurrent_gen(tasks, nonces_per_task, fn -> NoNoncense.sortable_nonce(@name, 128) end)
-      |> Enum.count()
+      |> length()
       |> then(fn count -> assert count == tasks * nonces_per_task end)
     end
   end

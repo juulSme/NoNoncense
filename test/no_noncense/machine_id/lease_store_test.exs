@@ -1,5 +1,7 @@
 defmodule NoNoncense.MachineId.LeaseStoreTest do
   use ExUnit.Case, async: true
+  use Mimic
+  import NoNoncense.State
 
   alias NoNoncense.MachineId.LeaseStore
 
@@ -151,7 +153,8 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
 
     send(name, {:timeout, timer, :expired})
-    refute_receive {:lease_lost, _, _}, 20
+    assert LeaseStore.get(name) == nil
+    refute_received {:lease_lost, _, _}
   end
 
   test "discarding a stored lease disables factories without notifying the lease manager" do
@@ -164,7 +167,7 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     assert LeaseStore.discard(name) == :ok
     assert LeaseStore.get(name) == nil
     assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
-    refute_receive {:lease_lost, _, _}, 20
+    refute_received {:lease_lost, _, _}
   end
 
   test "treats a lease at or past its local expiry boundary as invalid" do
@@ -211,8 +214,8 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     {:ok, renewed_lease} = renew(name, :lease2, 30_000)
 
     send(name, {:timeout, old_timer, :expired})
-    refute_receive {:lease_lost, _, :expired}, 20
     assert LeaseStore.get(name) == renewed_lease
+    refute_received {:lease_lost, _, :expired}
     assert <<_::64>> = NoNoncense.nonce(instance, 64)
 
     expire(name)

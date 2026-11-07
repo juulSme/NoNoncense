@@ -117,10 +117,18 @@ defmodule NoNoncense.MachineId.IntegrationTest do
       %{lease_manager: lm, lease_store: store} =
         start_machine_id!([instances: [[name: db_name]]], fixtures.conn, fixtures.key)
 
-      id = LeaseStore.machine_id(store)
+      %{lease: {id, token}} = LeaseStore.get(store)
 
-      # let the TTL decay a bit in real time so a refreshed TTL is measurably higher
-      Process.sleep(100)
+      assert {:ok, [1, 1]} =
+               Redix.command(fixtures.conn, [
+                 "HPEXPIRE",
+                 fixtures.key,
+                 "20000",
+                 "FIELDS",
+                 "2",
+                 "#{id}",
+                 "token.#{id}.#{token}"
+               ])
 
       {:ok, [ttl_before]} =
         Redix.command(fixtures.conn, ["HPTTL", fixtures.key, "FIELDS", "1", "#{id}"])
