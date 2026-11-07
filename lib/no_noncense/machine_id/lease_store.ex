@@ -122,13 +122,18 @@ defmodule NoNoncense.MachineId.LeaseStore do
     {:reply, if(valid?(lease), do: lease), state}
   end
 
-  # Acquisition: the machine ID comes from the strategy. Factories are enabled before the timer
-  # is armed, and a rejected lease leaves the previous state untouched.
+  # Acquisition: factories are enabled before the timer is armed. If initialization exhausts
+  # the local validity window, factories are disabled again before rejecting the lease.
   def handle_call({:put, machine_id, lease, ttl_ms, started_at}, _from, state) do
     case build(machine_id, lease, ttl_ms, started_at) do
       {:ok, stored} ->
         Enum.each(state.instances, &Instances.re_init(Keyword.put(&1, :machine_id, machine_id)))
-        {:reply, {:ok, stored}, arm(state, stored)}
+
+        if valid?(stored) do
+          {:reply, {:ok, stored}, arm(state, stored)}
+        else
+          {:reply, {:error, :expired}, clear(state, :expired)}
+        end
 
       {:error, _reason} = error ->
         {:reply, error, state}

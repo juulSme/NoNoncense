@@ -112,6 +112,37 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     assert LeaseStore.get(name) == lease
   end
 
+  test "rejects a lease that expires during initialization and disables every factory" do
+    early_instance = unique_name("nonce")
+    delayed_instance = unique_name("nonce")
+    NoNoncense.init(name: delayed_instance, machine_id: 7)
+    state(counters_ref: old_counters) = :persistent_term.get(delayed_instance)
+
+    %{name: name, pid: pid} =
+      start_store!(
+        lease_manager: self(),
+        instances: [[name: early_instance], [name: delayed_instance]]
+      )
+
+    started_at = System.monotonic_time(:millisecond)
+    expect(System, :monotonic_time, fn :millisecond -> started_at end)
+    expect(System, :monotonic_time, fn :millisecond -> started_at + 20_000 end)
+    allow(System, self(), pid)
+
+    assert {:error, :expired} = LeaseStore.put(name, 7, :late, 30_000, started_at)
+    state(counters_ref: new_counters) = :persistent_term.get(delayed_instance)
+    refute new_counters == old_counters
+    assert LeaseStore.get(name) == nil
+    assert %{lease: nil, timer: nil} = :sys.get_state(name)
+    assert Process.alive?(pid)
+
+    for instance <- [early_instance, delayed_instance] do
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
+    end
+
+    refute_received {:lease_lost, _lease, _reason}
+  end
+
   test "does not revive a lease past its expiry even if its timer has not run" do
     %{name: name} = start_store!(lease_manager: self())
     put(name, 7, :token, 30_000)
