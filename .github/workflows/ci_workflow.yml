@@ -14,19 +14,19 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:alpine
         env:
           POSTGRES_PASSWORD: supersecret
         ports:
           - 5432:5432
       mysql:
-        image: mysql:9
+        image: mysql:lts
         env:
           MYSQL_ROOT_PASSWORD: supersecret
         ports:
           - 3306:3306
       valkey:
-        image: valkey/valkey:9-alpine
+        image: valkey/valkey:alpine
         ports:
           - 6379:6379
 
@@ -38,7 +38,7 @@ jobs:
           # soft support floor
           - elixir: 1.16.x
             otp: 25.x
-            os: ubuntu-latest
+            os: ubuntu-24.04
             command: mix test
           # hard support floor (current minus 2)
           - elixir: 1.18.x

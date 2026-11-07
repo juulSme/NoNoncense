@@ -39,6 +39,29 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
       assert lease.lock_version == 1
       assert DateTime.compare(lease.expires_at, DateTime.utc_now()) == :gt
     end
+
+    test "concurrent acquires receive distinct ids" do
+      ids =
+        1..20
+        |> Task.async_stream(fn _ -> SqlLease.acquire(10_000, @opts) end, timeout: 10_000)
+        |> Enum.map(fn {:ok, {:ok, id, _lease, _ttl}} -> id end)
+
+      assert length(Enum.uniq(ids)) == 20
+    end
+
+    test "returns a conflict after every candidate is claimed concurrently" do
+      parent = self()
+
+      stub(MysqlRepo, :update_all, fn _query, _updates ->
+        send(parent, :claim_attempt)
+        {0, nil}
+      end)
+
+      assert {:error, :conflict} = SqlLease.acquire(10_000, @opts)
+
+      for _ <- 1..512, do: assert_received(:claim_attempt)
+      refute_received :claim_attempt
+    end
   end
 
   describe "renew/3" do
@@ -89,17 +112,6 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
       assert {:error, :lost, :expired} = SqlLease.renew(stale_lease, 10_000, @opts)
       assert {:ok, _renewed, _ttl} = SqlLease.renew(current_lease, 10_000, @opts)
     end
-
-    test "returns {:error, :retry, _} instead of raising when the repo errors unexpectedly" do
-      assert {:ok, _id, lease, _ttl} = SqlLease.acquire(10_000, @opts)
-
-      stub(MysqlRepo, :update_all, fn _query, _opts ->
-        raise DBConnection.ConnectionError, message: "connection closed"
-      end)
-
-      {result, _log} = with_log(fn -> SqlLease.renew(lease, 10_000, @opts) end)
-      assert {:error, :retry, _reason} = result
-    end
   end
 
   describe "release/2" do
@@ -108,7 +120,9 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
       assert :ok = SqlLease.release(lease, @opts)
 
       released = MysqlRepo.get(NoNoncenseLease, id)
+      assert released.token == nil
       assert DateTime.compare(released.expires_at, DateTime.utc_now()) != :gt
+      assert {:error, :lost, :expired} = SqlLease.renew(lease, 10_000, @opts)
       assert {:ok, ^id, _new_lease, _ttl} = SqlLease.acquire(10_000, @opts)
     end
 
@@ -122,16 +136,6 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
 
       {_, _log} = with_log(fn -> assert :ok = SqlLease.release(stale_lease, @opts) end)
       assert {:ok, _renewed, _ttl} = SqlLease.renew(current_lease, 10_000, @opts)
-    end
-
-    test "returns :ok even if the underlying update fails unexpectedly" do
-      assert {:ok, _id, lease, _ttl} = SqlLease.acquire(10_000, @opts)
-
-      stub(MysqlRepo, :update_all, fn _query, _opts ->
-        raise DBConnection.ConnectionError, message: "connection closed"
-      end)
-
-      {_, _log} = with_log(fn -> assert :ok = SqlLease.release(lease, @opts) end)
     end
   end
 end

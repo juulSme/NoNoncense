@@ -36,13 +36,6 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:ok, 0, _, _} = RedisLease.acquire(10_000, opts)
     end
 
-    test "returns an error when the connection wrapper exits", fixtures do
-      with_connection = fn _fun -> exit(:pool_timeout) end
-      opts = Keyword.put(fixtures.opts, :with_connection, with_connection)
-
-      assert {:error, {:exit, :pool_timeout}} = RedisLease.acquire(10_000, opts)
-    end
-
     test "acquires the first unleased ID", fixtures do
       assert {:ok, 2} =
                Redix.command(fixtures.conn, [
@@ -91,43 +84,7 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:ok, 0, _, _} = RedisLease.acquire(10_000, fixtures.opts)
     end
 
-    test "retries a conditional conflict using a refreshed lease view" do
-      parent = self()
-      marker = "token.0." <> String.duplicate("a", 22)
-      responses = Agent.start_link(fn -> [[], ["0", marker]] end)
-      {:ok, response_agent} = responses
-      attempts = Agent.start_link(fn -> 0 end)
-      {:ok, attempt_agent} = attempts
-
-      stub(Redix, :command, fn :conn, command ->
-        send(parent, {:redis_command, command})
-
-        case command do
-          ["HKEYS", "test-key"] ->
-            Agent.get_and_update(response_agent, fn [response | remaining] ->
-              {response, remaining}
-            end)
-            |> then(&{:ok, &1})
-
-          ["HSETEX", "test-key", "FNX", "PX", _ttl, "FIELDS", "2", id, _token, _marker, id] ->
-            Agent.get_and_update(attempt_agent, fn attempt ->
-              result = if attempt == 0, do: {:ok, 0}, else: {:ok, 1}
-              {result, attempt + 1}
-            end)
-        end
-      end)
-
-      assert {:ok, 1, {1, _token}, 10_000} =
-               RedisLease.acquire(10_000, with_connection: :conn, key: "test-key")
-
-      assert_receive {:redis_command,
-                      ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", "0" | _]}
-
-      assert_receive {:redis_command,
-                      ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", "1" | _]}
-    end
-
-    test "stops after three conditional conflicts" do
+    test "tries the next free ID after a conditional conflict" do
       parent = self()
 
       stub(Redix, :command, fn :conn, command ->
@@ -137,17 +94,47 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
           ["HKEYS", "test-key"] ->
             {:ok, []}
 
-          ["HSETEX", "test-key", "FNX", "PX", _ttl, "FIELDS", "2", "0", _token, _marker, "0"] ->
-            {:ok, 0}
+          ["HSETEX", "test-key", "FNX", "PX", _ttl, "FIELDS", "2", id, _token, _marker, id] ->
+            if id == "0", do: {:ok, 0}, else: {:ok, 1}
+        end
+      end)
+
+      assert {:ok, 1, {1, _token}, 10_000} =
+               RedisLease.acquire(10_000, with_connection: :conn, key: "test-key")
+
+      assert_received {:redis_command, ["HKEYS", "test-key"]}
+
+      assert_received {:redis_command,
+                       ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", "0" | _]}
+
+      assert_received {:redis_command,
+                       ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", "1" | _]}
+
+      refute_received {:redis_command, ["HKEYS" | _]}
+    end
+
+    test "returns a conflict after every free ID is claimed concurrently" do
+      parent = self()
+
+      stub(Redix, :command, fn :conn, command ->
+        send(parent, {:redis_command, command})
+
+        case command do
+          ["HKEYS", "test-key"] -> {:ok, []}
+          ["HSETEX", "test-key", "FNX" | _] -> {:ok, 0}
         end
       end)
 
       assert {:error, :conflict} =
                RedisLease.acquire(10_000, with_connection: :conn, key: "test-key")
 
-      assert_received {:redis_command, ["HSETEX" | _]}
-      assert_received {:redis_command, ["HSETEX" | _]}
-      assert_received {:redis_command, ["HSETEX" | _]}
+      for id <- 0..511 do
+        id = Integer.to_string(id)
+
+        assert_received {:redis_command,
+                         ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", ^id | _]}
+      end
+
       refute_received {:redis_command, ["HSETEX" | _]}
     end
   end
@@ -159,7 +146,6 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:ok, [ttl_before]} =
                Redix.command(fixtures.conn, ["HPTTL", fixtures.key, "FIELDS", "1", "0"])
 
-      Process.sleep(50)
       assert {:ok, ^lease, 20_000} = RedisLease.renew(lease, 20_000, fixtures.opts)
 
       assert {:ok, [ttl_after]} =
@@ -189,14 +175,6 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:ok, ^current_lease, 10_000} =
                RedisLease.renew(current_lease, 10_000, fixtures.opts)
     end
-
-    test "reports a connection wrapper exit as retryable", fixtures do
-      with_connection = fn _fun -> exit(:pool_timeout) end
-      opts = Keyword.put(fixtures.opts, :with_connection, with_connection)
-
-      assert {:error, :retry, {:exit, :pool_timeout}} =
-               RedisLease.renew({0, "token"}, 10_000, opts)
-    end
   end
 
   describe "release/2" do
@@ -216,13 +194,6 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
 
       assert {:ok, ^current_token} =
                Redix.command(fixtures.conn, ["HGET", fixtures.key, "0"])
-    end
-
-    test "remains best-effort when the connection wrapper exits", fixtures do
-      with_connection = fn _fun -> exit(:pool_timeout) end
-      opts = Keyword.put(fixtures.opts, :with_connection, with_connection)
-
-      assert :ok = RedisLease.release({0, "token"}, opts)
     end
   end
 

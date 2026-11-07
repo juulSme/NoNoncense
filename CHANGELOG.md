@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0]
+
+Machine ID lease management has been substantially reworked to better withstand coordinator
+failures, slow callbacks, and lease loss while protecting nonce uniqueness.
+
+- Enforce local lease expiry independently of strategy callbacks, disabling factories on lease loss, expiry, or store shutdown. Release locally rejected leases on a best-effort basis.
+- Add `:callback_timeout` to bound acquisition, renewal, and release calls.
+- Remove internal `LeaseManager.machine_id/0,1`, `LeaseManager.lease_lost/0,1,2`, and `LeaseCache` APIs. Direct use was not a supported integration; the supported `NoNoncense.MachineId` supervision API is unchanged.
+- Require strategy `release/2` callbacks to be idempotent and ignore stale leases; they may run after a replacement is acquired.
+- `SqlLease` prevents delayed renewals from reviving released leases.
+- Prevent duplicate nonces when a factory is reinitialized shortly after lease loss.
+- Rename telemetry `:source` value `:cache` to `:store` and add `:loss`.
+- Fix an off-by-one timestamp overflow check.
+- RedisLease and SqlLease now attempt acquisition of up to 512 IDs (possibly pre-empted by the callback timeout), shuffled after the first three (so they still prefer the lowest available).
+
 ## [2.0.0]
 
 - `NoNoncense.MachineId` is now a supervisor that can manage machine ID leases using several strategies based on MySQL / Postgres / Redis / Valkey coordination, or Kubernetes Statefulsets, or classic static node identifiers. NoNoncense can still be initialized directly using a static machine ID.

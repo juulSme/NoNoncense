@@ -1,5 +1,5 @@
 defmodule NoNoncense.MachineId do
-  alias NoNoncense.MachineId.{ConflictGuard, LeaseCache, LeaseManager}
+  alias NoNoncense.MachineId.{ConflictGuard, LeaseStore, LeaseManager}
 
   @options_docs """
     * `:name` - registered name of this supervisor (default `#{inspect(__MODULE__)}`)
@@ -13,9 +13,8 @@ defmodule NoNoncense.MachineId do
 
   Every node generating nonces needs a unique machine ID (0–511). `NoNoncense.MachineId`
   acquires and holds that ID through a pluggable strategy, automatically renewing it in the
-  background. `LeaseManager` directly initializes the configured `NoNoncense` factories after
-  acquiring a lease, disables them when that lease is lost, and initializes them again after a
-  successful reacquisition.
+  background. Configured `NoNoncense` factories are enabled when a lease is accepted and disabled
+  when it is lost.
 
   ## Usage
 
@@ -30,12 +29,6 @@ defmodule NoNoncense.MachineId do
          instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
       ]
 
-  Startup blocks until the initial lease is acquired. Once started, the lease renews
-  automatically. If a lease is confirmed lost or reaches its local expiry deadline, the factories
-  are disabled, `:on_lease_lost` is called with the reason, and the manager keeps trying to
-  acquire a lease. The callback may notify, halt the node, or take any other application-specific
-  action.
-
   ## Strategies
 
   | Strategy | Infrastructure | Notes |
@@ -49,24 +42,67 @@ defmodule NoNoncense.MachineId do
 
   A `NoNoncense.MachineId.ConflictGuard` is started by default. Set
   `enable_conflict_guard?: false` to disable it. The guard uses Erlang node networking to detect
-  machine ID conflicts. It works with every strategy but is most useful with strategies that don't
-  have a central lease coordinator. It requires distributed Erlang; without connected nodes, it
-  has no peers to compare.
+  machine ID conflicts when nodes connect. It works with every strategy but is most useful with
+  static strategies that have no central lease coordinator. On a conflict, the newer node loses its
+  lease, which disables its factories and triggers `:on_lease_lost`. It requires distributed Erlang;
+  without connected nodes, it has no peers to compare.
 
   ## Options
 
   #{@options_docs}
+
+  ## Lease lifecycle
+
+  Two supervised processes share the work. The lease manager talks to the strategy to acquire,
+  renew, and release leases. The lease store holds the current lease and enforces its local expiry,
+  so it keeps working even when a strategy callback blocks or the manager restarts.
+
+  Startup blocks until a lease is acquired or `:acquire_timeout` is reached. Acquisition failures
+  are retried with backoff; a strategy granting a TTL below 30 seconds fails startup immediately.
+  Factories are enabled only after a lease is accepted.
+
+  The strategy may grant a TTL different from the requested `:lease_duration`. Local expiry is
+  calculated from the start of the acquire or renew call, using the granted TTL less a 10-second
+  safety margin. Renewal is scheduled one safety margin before the earlier of the configured
+  `:renew_interval` and local expiry, or immediately if that time has already passed. A lease is
+  rejected if its TTL is below 30 seconds or the call has exhausted its local validity window;
+  release is attempted on a best-effort basis.
+
+  Acquisition, renewal, and release run in isolated tasks bounded by `:callback_timeout`. During
+  startup, the remaining `:acquire_timeout` also bounds these calls. A timed-out call may still
+  have taken effect in the coordinator; see `NoNoncense.MachineId.Strategy` for the resulting
+  requirements on strategy implementations.
+
+  ## Lease loss and recovery
+
+  A transient or ambiguous renewal failure is retried with backoff while the lease remains locally
+  valid. A confirmed loss or local expiry disables the factories and triggers `:on_lease_lost` with
+  the reason. Expiry is enforced independently of strategy callbacks, although timer latency can
+  delay factory shutdown briefly after the local deadline. Notifications are best-effort if the
+  lease manager is unavailable.
+
+  Coordinating strategies retry acquisition after a loss; deterministic strategies do not, since
+  they would return the same ID. A successful reacquisition reinitializes the factories. The
+  `:on_lease_lost` callback can notify, halt the node, or take another application-specific action;
+  it runs in the lease manager, so a blocking callback delays recovery.
+
+  A lease can survive a lease manager crash and be renewed on restart. On graceful shutdown,
+  factories are disabled and release of any still-valid lease is attempted on a best-effort basis.
   """
   use Supervisor
 
-  @type opt ::
-          {:name, module()}
-          | {:strategy, module()}
+  @type lease_opt ::
+          {:strategy, module()}
           | {:strategy_opts, keyword()}
           | {:lease_duration, pos_integer()}
           | {:renew_interval, pos_integer()}
           | {:acquire_timeout, pos_integer() | :infinity}
+          | {:callback_timeout, pos_integer()}
           | {:on_lease_lost, (term() -> any())}
+
+  @type opt ::
+          lease_opt()
+          | {:name, module()}
           | {:instances, [NoNoncense.init_opt()]}
           | {:enable_conflict_guard?, boolean()}
 
@@ -86,47 +122,45 @@ defmodule NoNoncense.MachineId do
   @impl true
   def init(opts) do
     name = opts[:name] || __MODULE__
-
-    # LeaseCache
-    cache_name = Module.concat(name, :LeaseCache)
-    cache_opts = [name: cache_name]
-    lease_cache = {LeaseCache, cache_opts}
-
-    # LeaseManager
-    lm_name = Module.concat(name, :LeaseManager)
     instances = Keyword.fetch!(opts, :instances)
     instances = Enum.map(instances, &Keyword.put_new(&1, :name, NoNoncense))
 
+    # LeaseStore
+    store_name = Module.concat(name, :LeaseStore)
+    lm_name = Module.concat(name, :LeaseManager)
+    store_opts = [name: store_name, lease_manager: lm_name, instances: instances]
+    lease_store = {LeaseStore, store_opts}
+
+    task_supervisor_name = Module.concat(name, :TaskSupervisor)
+    task_supervisor = {Task.Supervisor, name: task_supervisor_name}
+
+    # LeaseManager
     lm_opts =
       opts
-      |> Keyword.drop([:enable_conflict_guard?])
-      |> Keyword.merge(name: lm_name, instances: instances, lease_cache: cache_name)
+      |> Keyword.drop([:enable_conflict_guard?, :instances])
+      |> Keyword.merge(
+        name: lm_name,
+        lease_store: store_name,
+        task_supervisor: task_supervisor_name
+      )
 
     lease_manager = {LeaseManager, lm_opts}
 
-    # ConflictGuard
+    # ConflictGuard talks to the store, which never blocks on strategy callbacks
     enable_cg? = Keyword.get(opts, :enable_conflict_guard?, true)
     cg_name = Module.concat(name, :ConflictGuard)
-    # ConflictGuard should not crash if LeaseManager is down
-    get_machine_id = safe_caller(fn -> LeaseManager.machine_id(lm_name) end, nil)
-    on_conflict = safe_caller(fn -> LeaseManager.lease_lost(lm_name, :conflict_guard) end, :ok)
-    cg_opts = [name: cg_name, on_conflict: on_conflict, machine_id: get_machine_id]
+
+    cg_opts = [
+      name: cg_name,
+      on_conflict: fn -> LeaseStore.lose(store_name, :conflict_guard) end,
+      machine_id: fn -> LeaseStore.machine_id(store_name) end
+    ]
+
     conflict_guard = if enable_cg?, do: {ConflictGuard, cg_opts}, else: nil
 
     # Supervisor
-    [lease_cache, lease_manager, conflict_guard]
+    [lease_store, task_supervisor, lease_manager, conflict_guard]
     |> Enum.reject(&is_nil/1)
-    |> Supervisor.init(strategy: :one_for_one)
-  end
-
-  # create a function that can call a genserver that is down without crashing
-  defp safe_caller(fun, result_if_down) do
-    fn ->
-      try do
-        fun.()
-      catch
-        :exit, {:noproc, _} -> result_if_down
-      end
-    end
+    |> Supervisor.init(strategy: :rest_for_one)
   end
 end

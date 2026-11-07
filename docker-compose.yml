@@ -1,13 +1,12 @@
-# only needed for the slow collision test
 services:
   valkey:
-    image: valkey/valkey:9-trixie
+    image: valkey/valkey:alpine
     command: valkey-server --save "" --appendonly no
     ports:
       - 6379:6379
 
   postgres:
-    image: postgres:17-alpine
+    image: postgres:alpine
     ports:
       - 5432:5432
     environment:
@@ -18,7 +17,7 @@ services:
         condition: service_healthy
 
   mysql:
-    image: mysql:9
+    image: mysql:lts
     ports:
       - 3306:3306
     environment:

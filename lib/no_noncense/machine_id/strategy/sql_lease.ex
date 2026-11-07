@@ -4,9 +4,8 @@ if Code.ensure_loaded?(Ecto.Migration) do
     Strategy to acquire a machine ID lease from a SQL database (Postgres or MySQL), coordinating
     uniqueness across nodes through a single table.
 
-    Each machine ID (`0..511`) is a row in the table; a node acquires the lowest available (i.e.
-    already-expired) row and holds it by keeping its `expires_at` in the future with a random
-    `token`, renewing it periodically.
+    Each machine ID (`0..511`) is a row in the table. A node claims an expired row using a random
+    token and renews it periodically.
 
     Requires a table with one pre-populated row per possible machine ID - see the migration below.
 
@@ -28,7 +27,8 @@ if Code.ensure_loaded?(Ecto.Migration) do
 
     ## Migration
 
-    A convenience helper `migrate/1` has been added to this module to help you write a migration. The table name is overridable using option `:table_name`.
+    Use `migrate/1` to create and populate the table in an Ecto migration. To use a custom table,
+    pass `:table_name` to `migrate/1` and the same name as `:table` in `strategy_opts`.
 
         defmodule MyApp.Repo.Migrations.NoNoncenseLeases do
           use Ecto.Migration
@@ -45,8 +45,8 @@ if Code.ensure_loaded?(Ecto.Migration) do
     #     that point there is no existing token to check against (fresh/expired rows can have
     #     `token: nil`, and SQL's `=` never matches `NULL`). Once a row is claimed, `renew/3` and
     #     `release/2` instead match on `token` alone - it's the stable identity of *this specific*
-    #     acquisition, since (unlike `lock_version`) it is never rotated by renew or release, only
-    #     by a fresh `claim/4`.
+    #     acquisition. Renew preserves it; release clears it so delayed renewals cannot revive a
+    #     released lease. A fresh `claim/4` generates a new token, making stale releases a no-op.
     #   * Not matching on `lock_version` in `renew/3` is deliberate, not an oversight: `lock_version`
     #     is bumped (via `inc:`) on every successful renew, so if a renewal commits but its
     #     response is lost (ambiguous failure), a caller retrying with its last-known lease would
@@ -59,7 +59,6 @@ if Code.ensure_loaded?(Ecto.Migration) do
     #     Normal usage (separate calls, no explicit transaction) is unaffected.
     alias __MODULE__.NoNoncenseLease
     import Ecto.Query
-    require Logger
 
     use NoNoncense.MachineId.Strategy
 
@@ -79,27 +78,18 @@ if Code.ensure_loaded?(Ecto.Migration) do
     def acquire(lease_duration, opts) do
       {repo, table} = process_opts(opts)
 
-      fn ->
-        from(l in {table, NoNoncenseLease},
-          where: l.expires_at < db_now(),
-          order_by: l.id,
-          limit: 5
-        )
-        |> repo.all()
-      end
-      |> catch_connection_error()
+      from(l in {table, NoNoncenseLease}, where: l.expires_at < db_now(), order_by: l.id)
+      |> repo.all()
+      |> NoNoncense.MachineId.Strategy.Shared.shuffle_after_3()
       |> case do
         [] -> {:error, :exhausted}
-        {:error, _} = err -> err
-        available -> claim(available, repo, table, lease_duration)
+        available -> claim(available, repo, table, :crypto.strong_rand_bytes(16), lease_duration)
       end
     end
 
-    defp claim([], _, _, _), do: {:error, :conflict}
+    defp claim([], _, _, _, _), do: {:error, :conflict}
 
-    defp claim([%{id: id, lock_version: lock_version} | rest], repo, table, lease_duration) do
-      token = :crypto.strong_rand_bytes(16)
-
+    defp claim([%{id: id, lock_version: lock_version} | rest], repo, table, token, lease_duration) do
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.lock_version == ^lock_version,
         update: [
@@ -110,8 +100,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
       |> update_all(repo)
       |> case do
         :ok -> {:ok, id, {id, token}, lease_duration}
-        {:error, :update_failed} -> claim(rest, repo, table, lease_duration)
-        error -> error
+        {:error, :update_failed} -> claim(rest, repo, table, token, lease_duration)
       end
     end
 
@@ -127,7 +116,6 @@ if Code.ensure_loaded?(Ecto.Migration) do
       |> case do
         :ok -> {:ok, {id, token}, lease_duration}
         {:error, :update_failed} -> {:error, :lost, :expired}
-        {:error, msg} -> {:error, :retry, msg}
       end
     end
 
@@ -137,7 +125,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
 
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.token == ^token,
-        update: [set: [expires_at: db_now()], inc: [lock_version: 1]]
+        update: [set: [token: nil, expires_at: db_now()], inc: [lock_version: 1]]
       )
       |> update_all(repo)
 
@@ -150,10 +138,12 @@ if Code.ensure_loaded?(Ecto.Migration) do
     @doc """
     Convenience helper for creating the leases table in an Ecto migration.
 
-    Creates table "#{@default_table_name}" (overridable) with `id`, `token`, `expires_at` and `lock_version` columns, and preseeds all 512 IDs.
+    Creates `"#{@default_table_name}"` with `id`, `token`, `expires_at`, and `lock_version`
+    columns, and populates all 512 IDs.
 
     ## Options
-      - `:table_name` override the name of the leases table. Must be passed to the strategy as well if overridden.
+
+      * `:table_name` - override the table name; pass the same name as `:table` to the strategy
     """
     @spec migrate([migrate_opt]) :: term()
     def migrate(opts \\ []) do
@@ -186,24 +176,9 @@ if Code.ensure_loaded?(Ecto.Migration) do
     end
 
     defp update_all(query, repo) do
-      fn ->
-        repo.update_all(query, [])
-        |> case do
-          {1, _} -> :ok
-          {0, _} -> {:error, :update_failed}
-        end
-      end
-      |> catch_connection_error()
-    end
-
-    defp catch_connection_error(fun) do
-      try do
-        fun.()
-      rescue
-        e in [DBConnection.ConnectionError] ->
-          msg = "unexpected repo result: #{inspect(e)}"
-          Logger.warning(msg)
-          {:error, msg}
+      case repo.update_all(query, []) do
+        {1, _} -> :ok
+        {0, _} -> {:error, :update_failed}
       end
     end
   end

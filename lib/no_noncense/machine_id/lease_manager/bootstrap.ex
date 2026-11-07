@@ -1,93 +1,101 @@
 defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   @moduledoc false
 
-  alias NoNoncense.MachineId.LeaseCache
-  alias NoNoncense.MachineId.LeaseManager.{Backoff, StateChange}
+  alias NoNoncense.MachineId.LeaseStore
+  alias NoNoncense.MachineId.LeaseManager.{Backoff, StrategyCall}
   alias NoNoncense.Telemetry
   require Logger
 
   @doc """
   Acquires a machine ID during LeaseManager startup.
 
-  - try to fetch a cached ID and lease
-  - renew the cached lease if it exists (single attempt)
-  - acquire a new lease otherwise
+  - renew the stored lease if it is still locally valid (single attempt)
+  - otherwise, or if renewal fails, acquire a new lease, retrying until the deadline
+  - an illegal TTL fails startup instead of retrying
 
+  `:acquire_timeout` bounds all of it, including the strategy calls themselves.
   This runs synchronously, so the manager does not start until it has a valid lease.
   """
-  @spec acquire_initial_id(map()) :: map()
+  @spec acquire_initial_id(map()) :: {:ok, LeaseStore.lease()} | {:error, term()}
   def acquire_initial_id(state) do
-    state |> fetch_cached() |> renew_if_leased() |> acquire_unless_leased()
-  end
+    # An absolute monotonic time, so every step below can ask how much time is left
+    deadline = state.acquire_timeout
+    deadline = if deadline == :infinity, do: deadline, else: deadline + now_mono()
 
-  defp fetch_cached(state = %{lease_cache: nil}), do: state
-
-  defp fetch_cached(%{lease_cache: cache} = state),
-    do: Map.merge(state, LeaseCache.get(cache) || %{})
-
-  defp renew_if_leased(state = %{machine_id: machine_id}) when state.leased? do
-    fn -> state.strategy.renew(state.lease, state.lease_duration, state.strategy_opts) end
-    |> Telemetry.lease_operation(:renew, %{strategy: state.strategy, source: :cache})
-    |> case do
-      {:ok, lease, ttl_ms} ->
-        Logger.debug("Lease of ID #{machine_id} renewed for #{ttl_ms}ms.")
-        StateChange.on_renewed(state, lease, ttl_ms)
-
-      {:error, status, reason} ->
-        Logger.debug("Failed to renew lease of ID #{machine_id}: #{inspect({status, reason})}")
-        StateChange.cleanup(state)
+    case renew_stored(state, deadline) do
+      {:ok, lease} -> {:ok, lease}
+      # The strategy grants TTLs we cannot use; retrying would get the same answer
+      {:error, :rejected, :illegal_ttl} -> {:error, :illegal_ttl}
+      _ -> acquire_new_until(state, deadline)
     end
   end
 
-  defp renew_if_leased(state), do: state
-
-  defp acquire_unless_leased(state) when not state.leased? do
-    acquire_timeout = state.acquire_timeout
-    deadline = if acquire_timeout == :infinity, do: :infinity, else: now_mono() + acquire_timeout
-
-    case acquire_until(state, deadline) do
-      {:ok, machine_id, lease, ttl_ms} ->
-        Logger.info("Lease of ID #{machine_id} acquired for #{ttl_ms}ms.")
-        StateChange.on_renewed(%{state | machine_id: machine_id}, lease, ttl_ms)
-
-      {:error, reason} ->
-        StateChange.on_lost(state, reason)
+  # Tries once to carry on with the lease a previous manager left in the store. Any other outcome,
+  # including having no usable stored lease, discards the store, so factories are disabled and
+  # nothing stale remains while a replacement is acquired. It must be `discard`, not `lose`: the
+  # manager is already registered, and a loss notification would start its loss handling.
+  defp renew_stored(state, deadline) do
+    case LeaseStore.get(state.lease_store) do
+      %{} = lease -> attempt_renew(state, lease, deadline)
+      nil -> LeaseStore.discard(state.lease_store) && nil
     end
   end
 
-  defp acquire_unless_leased(state), do: state
+  defp attempt_renew(state, lease, deadline) do
+    case StrategyCall.renew(state, lease.lease, :store, deadline: deadline) do
+      {:ok, renewed = %{machine_id: machine_id}} = ok ->
+        Logger.info("Lease of ID #{machine_id} resumed from store, #{valid_for(renewed)}.")
+        ok
 
-  defp acquire_until(state, deadline) do
-    if deadline_expired?(deadline) do
-      Logger.critical("Acquisition failed, deadline exceeded.")
-      {:error, :timeout}
+      failure ->
+        Logger.debug("Failed to renew stored ID #{lease.machine_id}: #{inspect(failure)}")
+        LeaseStore.discard(state.lease_store)
+        StrategyCall.release_async(state, lease.lease)
+        failure
+    end
+  end
+
+  # Acquires a fresh lease, looping until it succeeds, fails for good, or the deadline passes.
+  defp acquire_new_until(state, deadline) do
+    with {_, false} <- {:deadline_expired?, deadline_expired?(deadline)},
+         {:ok, lease} <- StrategyCall.acquire(state, :initial, deadline: deadline) do
+      Logger.info("Lease of ID #{lease.machine_id} acquired, #{valid_for(lease)}.")
+      {:ok, lease}
     else
-      fn -> state.strategy.acquire(state.lease_duration, state.strategy_opts) end
-      |> Telemetry.lease_operation(:acquire, %{strategy: state.strategy, source: :initial})
-      |> case do
-        {:ok, _, _, _} = ok ->
-          ok
+      {:deadline_expired?, true} ->
+        Logger.critical("Acquisition failed, deadline exceeded.")
+        {:error, :timeout}
 
-        {:error, reason} ->
-          Logger.warning("Acquisition failed: #{inspect(reason)}")
-          delay_limit = cap_at_deadline(state.acquire_timeout, deadline)
-          delay = Backoff.delay(state.attempt, 100, delay_limit)
+      {:error, :rejected, :illegal_ttl} ->
+        {:error, :illegal_ttl}
 
-          if delay > 0 do
-            Telemetry.lease_retry(:acquire, state.attempt, delay, reason)
-            Process.sleep(delay)
-          end
+      # The strategy answered but the call used up the validity window. StrategyCall has already
+      # released that lease, so try again straight away; the deadline bounds the loop.
+      {:error, :rejected, _reason} ->
+        acquire_new_until(state, deadline)
 
-          acquire_until(%{state | attempt: state.attempt + 1}, deadline)
-      end
+      # The strategy failed, timed out or crashed: back off, then try again.
+      {:error, :retry, reason} ->
+        Logger.warning("Acquisition failed: #{inspect(reason)}")
+        delay = Backoff.delay(state.attempt, 100, time_left(deadline))
+
+        # A zero delay means the deadline has been reached, so the next pass gives up
+        if delay > 0 do
+          Telemetry.lease_retry(:acquire, state.attempt, delay, reason)
+          Process.sleep(delay)
+        end
+
+        acquire_new_until(%{state | attempt: state.attempt + 1}, deadline)
     end
   end
 
   defp deadline_expired?(:infinity), do: false
   defp deadline_expired?(deadline), do: now_mono() >= deadline
 
-  defp cap_at_deadline(ttl, :infinity), do: ttl
-  defp cap_at_deadline(ttl, deadline), do: min(ttl, max(0, _deadline_ttl = deadline - now_mono()))
+  # Milliseconds until the deadline, which is also the longest a retry may sleep
+  defp time_left(:infinity), do: :infinity
+  defp time_left(deadline), do: max(0, deadline - now_mono())
 
-  defp now_mono(), do: :erlang.monotonic_time(:millisecond)
+  defp valid_for(lease), do: "valid for #{LeaseStore.remaining_ms(lease)}ms locally"
+  defp now_mono(), do: System.monotonic_time(:millisecond)
 end

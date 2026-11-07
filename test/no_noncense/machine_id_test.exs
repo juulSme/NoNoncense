@@ -2,13 +2,15 @@ defmodule NoNoncense.MachineIdTest do
   use ExUnit.Case, async: true
   import ExUnit.CaptureLog
 
-  alias NoNoncense.MachineId.LeaseManager
+  alias NoNoncense.MachineId.LeaseStore
 
   defmodule FakeStrategy do
     @behaviour NoNoncense.MachineId.Strategy
 
-    def start_agent(acquire, renew),
-      do: Agent.start_link(fn -> %{acquire: acquire, renew: renew} end)
+    def start_agent(acquire, renew) do
+      spec = {Agent, fn -> %{acquire: acquire, renew: renew} end}
+      ExUnit.Callbacks.start_supervised(Supervisor.child_spec(spec, id: make_ref()))
+    end
 
     @impl true
     def acquire(_lease_duration, opts), do: pop(opts[:agent], :acquire)
@@ -46,12 +48,17 @@ defmodule NoNoncense.MachineIdTest do
       |> Keyword.put_new(:on_lease_lost, fn reason -> send(test_pid, {:lease_lost, reason}) end)
 
     start_supervised!({NoNoncense.MachineId, opts})
-    %{name: name, lease_manager: Module.concat(name, :LeaseManager)}
+
+    %{
+      name: name,
+      lease_manager: Module.concat(name, :LeaseManager),
+      lease_store: Module.concat(name, :LeaseStore)
+    }
   end
 
   defp renew(lease_manager) do
-    state = :sys.get_state(lease_manager)
-    send(lease_manager, {:renew, state.generation})
+    {:renew, ref} = :sys.get_state(lease_manager).timer
+    send(lease_manager, {:timeout, ref, :renew})
   end
 
   defp assert_eventually(assertion, attempts \\ 20)
@@ -66,6 +73,29 @@ defmodule NoNoncense.MachineIdTest do
   end
 
   describe "initial acquisition" do
+    test "supervises the task supervisor before the lease manager" do
+      {:ok, agent} =
+        FakeStrategy.start_agent([{:ok, 7, :lease, 100_000}], [{:ok, :lease, 100_000}])
+
+      %{name: name, lease_manager: lease_manager} =
+        start_machine_id!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent],
+          enable_conflict_guard?: false,
+          instances: []
+        )
+
+      task_supervisor = Module.concat(name, :TaskSupervisor)
+      task_supervisor_pid = Process.whereis(task_supervisor)
+
+      assert is_pid(task_supervisor_pid)
+      assert %{task_supervisor: ^task_supervisor} = :sys.get_state(lease_manager)
+
+      assert {task_supervisor, task_supervisor_pid, :supervisor, [Task.Supervisor]} in Supervisor.which_children(
+               name
+             )
+    end
+
     test "blocks until it acquires a lease, then initializes factories" do
       {:ok, agent} =
         FakeStrategy.start_agent([{:error, :down}, {:ok, 7, :lease, 100_000}], [
@@ -84,23 +114,23 @@ defmodule NoNoncense.MachineIdTest do
           )
         end)
 
-      assert LeaseManager.machine_id(machine_id.lease_manager) == 7
+      assert LeaseStore.machine_id(machine_id.lease_store) == 7
       assert <<_::64>> = NoNoncense.nonce(instance, 64)
     end
 
     test "fails startup when no lease can be acquired before the timeout" do
       {:ok, agent} = FakeStrategy.start_agent([{:error, :down}], [{:ok, :lease, 100_000}])
-      Process.flag(:trap_exit, true)
 
       {result, _log} =
         with_log(fn ->
-          NoNoncense.MachineId.start_link(
-            name: unique_name("sup"),
-            strategy: FakeStrategy,
-            strategy_opts: [agent: agent],
-            acquire_timeout: 30,
-            enable_conflict_guard?: false,
-            instances: [[name: unique_name("nonce")]]
+          start_supervised(
+            {NoNoncense.MachineId,
+             name: unique_name("sup"),
+             strategy: FakeStrategy,
+             strategy_opts: [agent: agent],
+             acquire_timeout: 30,
+             enable_conflict_guard?: false,
+             instances: [[name: unique_name("nonce")]]}
           )
         end)
 
@@ -122,7 +152,7 @@ defmodule NoNoncense.MachineIdTest do
           instances: [[name: db_name], [name: iv_name]]
         )
 
-      assert LeaseManager.machine_id(machine_id.lease_manager) == 9
+      assert LeaseStore.machine_id(machine_id.lease_store) == 9
       assert <<_::64>> = NoNoncense.nonce(db_name, 64)
       assert <<_::64>> = NoNoncense.nonce(iv_name, 64)
     end
@@ -180,7 +210,7 @@ defmodule NoNoncense.MachineIdTest do
       send(machine_id.lease_manager, :resume_reacquisition)
 
       assert_eventually(fn ->
-        assert LeaseManager.machine_id(machine_id.lease_manager) == 4
+        assert LeaseStore.machine_id(machine_id.lease_store) == 4
         assert <<_::64>> = NoNoncense.nonce(instance, 64)
       end)
     end

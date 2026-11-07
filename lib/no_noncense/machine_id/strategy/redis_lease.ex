@@ -4,7 +4,7 @@ if Code.ensure_loaded?(Redix) do
     Strategy to acquire a machine ID lease from Redis, coordinating uniqueness across nodes
     through a single Redis hash.
 
-    Each machine ID (`0..511`) is a field in the hash; a node acquires the lowest free ID and
+    Each machine ID (`0..511`) is a field in the hash; a node prefers the lowest free ID and
     holds it by keeping that field's value (a random token) alive with a TTL, renewing it
     periodically.
     Requires Redis 8+ or Valkey 9+ for `HSETEX`'s conditional (`FNX`/`FXX`) and per-field TTL support.
@@ -39,8 +39,8 @@ if Code.ensure_loaded?(Redix) do
     #
     #   * the ID field itself, e.g. `"3" => token` - this is what `acquire/2` scans to find a
     #     free ID, and what other nodes see as "ID 3 is taken".
-    #   * a marker field, e.g. `"<22-char token>.3" => ""` - a field whose key embeds both the
-    #     token and the ID it belongs to.
+    #   * a marker field, e.g. `"token.3.<22-char token>" => "3"` - a field whose key embeds both
+    #     the ID and the token.
     #
     # Both fields always share the same TTL and are written/refreshed/deleted together, so the
     # marker field exists for exactly as long as this specific (id, token) pair still owns the
@@ -53,6 +53,7 @@ if Code.ensure_loaded?(Redix) do
     # as `{:error, :lost, _}` - instead of silently refreshing or deleting somebody else's lease.
 
     use NoNoncense.MachineId.Strategy
+    alias NoNoncense.MachineId.Strategy.Shared
 
     @type with_connection :: ((Redix.connection() -> any()) -> any()) | Redix.connection()
     @type opt :: {:with_connection, with_connection()} | {:key, binary()}
@@ -63,32 +64,37 @@ if Code.ensure_loaded?(Redix) do
     @impl true
     def acquire(lease_duration, opts) do
       {with_conn, key} = process_opts(opts)
-      with_conn.(&_acquire(&1, key, lease_duration, 3))
+      with_conn.(&_acquire(&1, key, lease_duration))
     end
 
-    defp _acquire(_, _, _, 0), do: {:error, :conflict}
-
-    defp _acquire(conn, key, lease_duration, attempt) do
+    defp _acquire(conn, key, lease_duration) do
       with {:ok, keys} <- Redix.command(conn, ["HKEYS", key]),
-           leased_ids = leased_ids(keys),
-           [id | _] <- available_ids(leased_ids),
-           token = random_string(),
-           cmd = set_hash_fields_cmd(key, id, token, lease_duration, :if_none_exist),
-           {_, {:ok, 1}} <- {:acquire, Redix.command(conn, cmd)} do
+           available_ids = [_ | _] <- keys |> leased_ids() |> available_ids() do
+        token = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
+        available_ids |> Shared.shuffle_after_3() |> claim(conn, key, token, lease_duration)
+      else
+        [] -> {:error, :exhausted}
+        error -> error
+      end
+    end
+
+    defp claim([], _, _, _, _), do: {:error, :conflict}
+
+    defp claim([id | tail], conn, key, token, lease_duration) do
+      with cmd = set_hash_fields_cmd(key, id, token, lease_duration, :if_none_exist),
+           {:ok, 1} <- Redix.command(conn, cmd) do
         {:ok, id, {id, token}, lease_duration}
       else
-        {:acquire, _} -> _acquire(conn, key, lease_duration, attempt - 1)
-        [] -> {:error, :exhausted}
-        e -> {:error, "unknown: #{inspect(e)}"}
+        {:ok, 0} -> claim(tail, conn, key, token, lease_duration)
+        error -> error
       end
     end
 
     @impl true
     def renew(lease = {id, token}, lease_duration, opts) do
       {with_conn, key} = process_opts(opts)
-      cmd = set_hash_fields_cmd(key, id, token, lease_duration, :if_all_exist)
 
-      with_conn.(&Redix.command(&1, cmd))
+      exec(with_conn, set_hash_fields_cmd(key, id, token, lease_duration, :if_all_exist))
       |> case do
         {:ok, 1} -> {:ok, lease, lease_duration}
         {:ok, 0} -> {:error, :lost, :expired}
@@ -100,8 +106,8 @@ if Code.ensure_loaded?(Redix) do
     @impl true
     def release(_lease = {id, token}, opts) do
       {with_conn, key} = process_opts(opts)
-      cmd = set_hash_fields_cmd(key, id, token, 0, :if_all_exist)
-      with_conn.(&Redix.command(&1, cmd))
+      # ttl 0 effectively deletes, this is documented behavior on both Redis and Valkey
+      exec(with_conn, set_hash_fields_cmd(key, id, token, 0, :if_all_exist))
       :ok
     end
 
@@ -122,26 +128,20 @@ if Code.ensure_loaded?(Redix) do
           conn = {atom, node} when is_atom(atom) and is_atom(node) -> & &1.(conn)
           _ -> raise ArgumentError, "with_connection must be a fun/1 or a Redix connection"
         end
-        # create a wrapper to rescue/catch all exceptions and prevent crashing the manager
-        |> then(fn with_conn ->
-          fn fun ->
-            try do
-              with_conn.(fun)
-            rescue
-              exception -> {:error, {:exception, exception}}
-            catch
-              kind, reason -> {:error, {kind, reason}}
-            end
-          end
-        end)
 
       key = opts[:key] || @default_key
       {with_conn, key}
     end
 
-    defp leased_ids(keys) do
-      keys |> Stream.reject(&marker?/1) |> Enum.flat_map(&int_or_ignore/1) |> :ordsets.from_list()
+    defp exec(with_conn, command), do: with_conn.(&Redix.command(&1, command))
+
+    defp leased_ids(keys), do: keys |> Enum.flat_map(&key_to_id/1) |> :ordsets.from_list()
+
+    defp key_to_id(binary) do
+      if id?(binary), do: int_or_ignore(binary), else: []
     end
+
+    defp id?(binary), do: not marker?(binary)
 
     defp marker?(<<"token.", _::binary>>), do: true
     defp marker?(_), do: false
@@ -160,8 +160,5 @@ if Code.ensure_loaded?(Redix) do
 
       ["HSETEX", key, condition, "PX", ttl, "FIELDS", "2", id, token, marker_key, id]
     end
-
-    # results in binaries of length 22
-    defp random_string(), do: :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
   end
 end
