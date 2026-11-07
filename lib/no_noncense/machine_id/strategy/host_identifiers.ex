@@ -3,10 +3,10 @@ defmodule NoNoncense.MachineId.Strategy.HostIdentifiers do
   Strategy to assign machine IDs based on the current node's network identifiers (hostname,
   FQDN, IP addresses, or OTP node name), matched against a fixed list of all possible nodes.
 
-  Each entry in `node_list` receives a stable zero-based index as its machine ID. No external
-  coordinator is required — IDs are determined locally — but every node must be configured with
-  the same list. The list is treated as a set: insertion order does not affect which ID is
-  assigned.
+  Each entry in `node_list` receives a stable zero-based index as its machine ID. IDs are
+  determined locally, so every node must use the same list and have a unique matching identifier.
+  The list is treated as a set: insertion order does not affect the assigned ID. Keep the list
+  within 512 distinct entries so every index is in the supported range.
 
   Configure the strategy when starting `NoNoncense.MachineId`:
 
@@ -69,12 +69,12 @@ defmodule NoNoncense.MachineId.Strategy.HostIdentifiers do
   end
 
   @doc """
-  Get a list of all identifiers of the current node. You can use one or more of these values to populate your node list.
+  Returns the current node's identifiers, which can be used to populate the node list.
 
-  ## Examples / doctests
+  The result depends on the host, for example:
 
-      iex> host_identifiers()
-      [:nonode@nohost, "host.mydomain.com", "10.11.12.13", "myhost", "fe80::1234::abcd"]
+      NoNoncense.MachineId.Strategy.HostIdentifiers.host_identifiers()
+      #=> [:nonode@nohost, "host.mydomain.com", "10.11.12.13", "myhost", "fe80::1234::abcd"]
   """
   @spec host_identifiers() :: host_identifiers()
   def host_identifiers() do

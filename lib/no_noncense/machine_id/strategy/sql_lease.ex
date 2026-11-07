@@ -4,9 +4,8 @@ if Code.ensure_loaded?(Ecto.Migration) do
     Strategy to acquire a machine ID lease from a SQL database (Postgres or MySQL), coordinating
     uniqueness across nodes through a single table.
 
-    Each machine ID (`0..511`) is a row in the table; a node acquires the lowest available (i.e.
-    already-expired) row and holds it by keeping its `expires_at` in the future with a random
-    `token`, renewing it periodically.
+    Each machine ID (`0..511`) is a row in the table. A node claims an expired row using a random
+    token and renews it periodically.
 
     Requires a table with one pre-populated row per possible machine ID - see the migration below.
 
@@ -28,7 +27,8 @@ if Code.ensure_loaded?(Ecto.Migration) do
 
     ## Migration
 
-    A convenience helper `migrate/1` has been added to this module to help you write a migration. The table name is overridable using option `:table_name`.
+    Use `migrate/1` to create and populate the table in an Ecto migration. To use a custom table,
+    pass `:table_name` to `migrate/1` and the same name as `:table` in `strategy_opts`.
 
         defmodule MyApp.Repo.Migrations.NoNoncenseLeases do
           use Ecto.Migration
@@ -143,10 +143,12 @@ if Code.ensure_loaded?(Ecto.Migration) do
     @doc """
     Convenience helper for creating the leases table in an Ecto migration.
 
-    Creates table "#{@default_table_name}" (overridable) with `id`, `token`, `expires_at` and `lock_version` columns, and preseeds all 512 IDs.
+    Creates `"#{@default_table_name}"` with `id`, `token`, `expires_at`, and `lock_version`
+    columns, and populates all 512 IDs.
 
     ## Options
-      - `:table_name` override the name of the leases table. Must be passed to the strategy as well if overridden.
+
+      * `:table_name` - override the table name; pass the same name as `:table` to the strategy
     """
     @spec migrate([migrate_opt]) :: term()
     def migrate(opts \\ []) do

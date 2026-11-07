@@ -39,8 +39,8 @@ if Code.ensure_loaded?(Redix) do
     #
     #   * the ID field itself, e.g. `"3" => token` - this is what `acquire/2` scans to find a
     #     free ID, and what other nodes see as "ID 3 is taken".
-    #   * a marker field, e.g. `"<22-char token>.3" => ""` - a field whose key embeds both the
-    #     token and the ID it belongs to.
+    #   * a marker field, e.g. `"token.3.<22-char token>" => "3"` - a field whose key embeds both
+    #     the ID and the token.
     #
     # Both fields always share the same TTL and are written/refreshed/deleted together, so the
     # marker field exists for exactly as long as this specific (id, token) pair still owns the

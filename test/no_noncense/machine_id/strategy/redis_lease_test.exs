@@ -120,7 +120,7 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
                       ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", "1" | _]}
     end
 
-    test "stops after three conditional conflicts" do
+    test "stops after five conditional conflicts" do
       parent = self()
 
       stub(Redix, :command, fn :conn, command ->
@@ -138,6 +138,8 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:error, :conflict} =
                RedisLease.acquire(10_000, with_connection: :conn, key: "test-key")
 
+      assert_received {:redis_command, ["HSETEX" | _]}
+      assert_received {:redis_command, ["HSETEX" | _]}
       assert_received {:redis_command, ["HSETEX" | _]}
       assert_received {:redis_command, ["HSETEX" | _]}
       assert_received {:redis_command, ["HSETEX" | _]}

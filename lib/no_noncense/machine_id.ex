@@ -13,8 +13,8 @@ defmodule NoNoncense.MachineId do
 
   Every node generating nonces needs a unique machine ID (0–511). `NoNoncense.MachineId`
   acquires and holds that ID through a pluggable strategy, automatically renewing it in the
-  background. `LeaseStore` enables the configured `NoNoncense` factories when a lease is accepted,
-  disables them when that lease is lost, and enables them again after a successful reacquisition.
+  background. Configured `NoNoncense` factories are enabled when a lease is accepted and disabled
+  when it is lost.
 
   ## Usage
 
@@ -29,12 +29,6 @@ defmodule NoNoncense.MachineId do
          instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
       ]
 
-  Startup blocks until the initial lease is acquired. Once started, the lease renews
-  automatically. If a lease is confirmed lost or reaches its local expiry deadline, the factories
-  are disabled, `:on_lease_lost` is called with the reason, and the manager keeps trying to
-  acquire a lease. The callback may notify, halt the node, or take any other application-specific
-  action.
-
   ## Strategies
 
   | Strategy | Infrastructure | Notes |
@@ -48,18 +42,66 @@ defmodule NoNoncense.MachineId do
 
   A `NoNoncense.MachineId.ConflictGuard` is started by default. Set
   `enable_conflict_guard?: false` to disable it. The guard uses Erlang node networking to detect
-  machine ID conflicts. It works with every strategy but is most useful with strategies that don't
-  have a central lease coordinator. It requires distributed Erlang; without connected nodes, it
-  has no peers to compare.
+  machine ID conflicts when nodes connect. It works with every strategy but is most useful with
+  static strategies that have no central lease coordinator. On a conflict, the newer node loses its
+  lease, which disables its factories and triggers `:on_lease_lost`. It requires distributed Erlang;
+  without connected nodes, it has no peers to compare.
 
   ## Options
 
   #{@options_docs}
+
+  ## Lease lifecycle
+
+  Two supervised processes share the work. The lease manager talks to the strategy to acquire,
+  renew, and release leases. The lease store holds the current lease and enforces its local expiry,
+  so it keeps working even when a strategy callback blocks or the manager restarts.
+
+  Startup blocks until a lease is acquired or `:acquire_timeout` is reached. Acquisition failures
+  are retried with backoff; a strategy granting a TTL below 30 seconds fails startup immediately.
+  Factories are enabled only after a lease is accepted.
+
+  The strategy may grant a TTL different from the requested `:lease_duration`. Local expiry is
+  calculated from the start of the acquire or renew call, using the granted TTL less a 10-second
+  safety margin. Renewal is scheduled one safety margin before the earlier of the configured
+  `:renew_interval` and local expiry, or immediately if that time has already passed. A lease is
+  rejected if its TTL is below 30 seconds or the call has exhausted its local validity window;
+  release is attempted on a best-effort basis.
+
+  Acquisition, renewal, and release run in isolated tasks bounded by `:callback_timeout`. During
+  startup, the remaining `:acquire_timeout` also bounds these calls. A timed-out call may still
+  have taken effect in the coordinator; see `NoNoncense.MachineId.Strategy` for the resulting
+  requirements on strategy implementations.
+
+  ## Lease loss and recovery
+
+  A transient or ambiguous renewal failure is retried with backoff while the lease remains locally
+  valid. A confirmed loss or local expiry disables the factories and triggers `:on_lease_lost` with
+  the reason. Expiry is enforced independently of strategy callbacks, although timer latency can
+  delay factory shutdown briefly after the local deadline. Notifications are best-effort if the
+  lease manager is unavailable.
+
+  Coordinating strategies retry acquisition after a loss; deterministic strategies do not, since
+  they would return the same ID. A successful reacquisition reinitializes the factories. The
+  `:on_lease_lost` callback can notify, halt the node, or take another application-specific action;
+  it runs in the lease manager, so a blocking callback delays recovery.
+
+  A lease can survive a lease manager crash and be renewed on restart. On graceful shutdown,
+  factories are disabled and release of any still-valid lease is attempted on a best-effort basis.
   """
   use Supervisor
 
+  @type lease_opt ::
+          {:strategy, module()}
+          | {:strategy_opts, keyword()}
+          | {:lease_duration, pos_integer()}
+          | {:renew_interval, pos_integer()}
+          | {:acquire_timeout, pos_integer() | :infinity}
+          | {:callback_timeout, pos_integer()}
+          | {:on_lease_lost, (term() -> any())}
+
   @type opt ::
-          LeaseManager.shared_opt()
+          lease_opt()
           | {:name, module()}
           | {:instances, [NoNoncense.init_opt()]}
           | {:enable_conflict_guard?, boolean()}

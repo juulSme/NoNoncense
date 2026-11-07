@@ -1,43 +1,42 @@
 defmodule NoNoncense.MachineId.ConflictGuard do
   @moduledoc """
-  Guards against machine ID conflicts between nodes by broadcasting each node's machine ID to
-  newly connected peers and calling `on_conflict` whenever a duplicate is detected.
+  Checks machine IDs with newly connected Erlang nodes and calls `:on_conflict` when this guard
+  is the newer of two guards with the same ID.
 
   ## When to use
 
-  `ConflictGuard` is useful when running `NoNoncense` with strategies that do not provide
-  server-side uniqueness guarantees, such as `NoNoncense.MachineId.Strategy.HostIdentifiers` or
-  `NoNoncense.MachineId.Strategy.EnvironmentVariable`. It adds a runtime cross-check that a
-  split-brain or misconfiguration hasn't caused two nodes to end up with the same ID.
-
-  For lease-based strategies (`SqlLease`, `RedisLease`), the external coordinator already
-  prevents duplicate IDs, so `ConflictGuard` provides little additional value — though it
-  won't hurt to enable it.
+  The guard is most useful with static strategies such as
+  `NoNoncense.MachineId.Strategy.HostIdentifiers` and
+  `NoNoncense.MachineId.Strategy.EnvironmentVariable`, which do not coordinate IDs externally.
 
   > #### Requires distributed Erlang {: .warning}
   >
   > `ConflictGuard` only works when nodes are connected to each other via distributed Erlang
   > (i.e. started with `--name` / `--sname` and a shared cookie). Without it, the conflict
-  > checks never run.
-
-  ## Default action
-
-  When a conflict is detected, the newer node calls `on_conflict`, which defaults to halting
-  the node immediately via `:erlang.halt(111)`.
+  > checks never run. Guards on peer nodes must use the same registered name. Checks occur on
+  > connection, not continuously or when a machine ID changes.
 
   ## Usage
 
-  `NoNoncense.MachineId` starts `ConflictGuard` by default. Pass
-  `enable_conflict_guard?: false` to disable it. When enabled through `NoNoncense.MachineId`,
-  the supervisor derives the guard's name and resolves the machine ID through its lease store.
-  A conflict signals the lease store that its lease was lost:
+  `NoNoncense.MachineId` starts `ConflictGuard` by default. A conflict marks the local lease as
+  lost, disabling factories and triggering the configured `:on_lease_lost` callback:
 
       {NoNoncense.MachineId,
        strategy: NoNoncense.MachineId.Strategy.HostIdentifiers,
+       strategy_opts: [node_list: [:"myapp@10.0.0.1", :"myapp@10.0.0.2"]],
+       on_lease_lost: fn reason -> Logger.critical(inspect(reason)) end,
        instances: [[base_key: System.fetch_env!("BASE_KEY")]]}
 
-  When started manually, supply `:machine_id` to resolve the ID,
-  and `:on_conflict` to override the default halt behaviour.
+  Pass `enable_conflict_guard?: false` to disable it.
+
+  To run it on its own, supply `:machine_id` as an integer or zero-arity function. The
+  `:on_conflict` callback defaults to halting the node via `:erlang.halt(111)`:
+
+      {NoNoncense.MachineId.ConflictGuard,
+       machine_id: fn -> NoNoncense.MachineId.Strategy.HostIdentifiers.id!(node_list: nodes) end,
+       on_conflict: fn -> System.stop(1) end}
+
+  Guard start times use the system clock; equal timestamps cause both guards to act.
   """
   use GenServer
   alias NoNoncense.Telemetry

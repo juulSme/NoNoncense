@@ -49,7 +49,7 @@ defmodule NoNoncense.MachineId.Instances do
     if epoch_now <= used_ts, do: :timer.sleep(used_ts - epoch_now + 1)
   end
 
-  @doc "Erases an instance so it can no longer generate nonces."
+  @doc "Disables an instance so it can no longer generate nonces."
   @spec disable(instance_opts()) :: :ok
   def disable(opts) do
     name = Keyword.fetch!(opts, :name)

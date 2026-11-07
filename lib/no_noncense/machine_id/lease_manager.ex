@@ -8,11 +8,11 @@ defmodule NoNoncense.MachineId.LeaseManager do
       lease's actual TTL to allow for retries (default 30 minutes)
     * `:acquire_timeout` - max total time, in ms, to keep retrying acquisition at boot before giving up
       and failing `start_link/1` (default `60_000`; pass `:infinity` to retry forever)
-    * `:callback_timeout` - maximum time, in ms, to wait for each strategy callback (default `5_000`)
-    * `:on_lease_lost` - called with the reason for the lease loss, after the lease store
-      has already disabled every configured factory to preserve uniqueness guarantees. Can be
-      used to halt the entire node, for example. Notifications are best-effort if the manager
-      is unavailable.
+    * `:callback_timeout` - maximum time, in ms, to wait for an acquire, renew, or release callback
+      (default `5_000`)
+    * `:on_lease_lost` - called with the reason for the lease loss, after every configured factory
+      has been disabled to preserve uniqueness guarantees. Can be used to halt the entire node, for
+      example. Notifications are best-effort if the lease manager is unavailable.
 
   ### Lease duration and renew interval
 
@@ -28,29 +28,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
   #{@shared_options_docs}
   """
 
-  @moduledoc """
-  Acquires and renews a machine ID lease through a pluggable `NoNoncense.MachineId.Strategy`,
-  managing the configured `NoNoncense` factories together with `LeaseStore`.
-
-  Initial acquisition blocks startup. Once leased, the manager renews before the earlier of the
-  configured renewal interval and the strategy-provided TTL. A confirmed loss or local expiry
-  disables every configured factory, asynchronously releases the lost strategy lease, invokes
-  `:on_lease_lost` with a reason, and schedules reacquisition. A successful reacquisition
-  reinitializes the factories with the new machine ID.
-
-  An ambiguous renewal failure is retried while the known-valid window remains open. On graceful
-  shutdown, the manager makes a best-effort call to the strategy's `release/2` callback when it
-  still holds a lease.
-
-  `LeaseStore` is the authoritative local lease record, surviving a crash of this process so a
-  restart can renew the prior lease instead of acquiring a new one. `LeaseStore` owns its expiry
-  timer and disables factories independently of potentially blocking strategy callbacks performed
-  here.
-
-  ## Options
-
-  #{@options_docs}
-  """
+  @moduledoc false
 
   # Implementation notes:
   #
@@ -85,18 +63,8 @@ defmodule NoNoncense.MachineId.LeaseManager do
   alias NoNoncense.Telemetry
   require Logger
 
-  @typedoc "Options shared with `NoNoncense.MachineId`."
-  @type shared_opt ::
-          {:strategy, module()}
-          | {:strategy_opts, keyword()}
-          | {:lease_duration, pos_integer()}
-          | {:renew_interval, pos_integer()}
-          | {:acquire_timeout, pos_integer() | :infinity}
-          | {:callback_timeout, pos_integer()}
-          | {:on_lease_lost, (term() -> any())}
-
   @type opt ::
-          shared_opt()
+          NoNoncense.MachineId.lease_opt()
           | {:name, GenServer.name()}
           | {:lease_store, GenServer.name()}
           | {:task_supervisor, GenServer.server()}
