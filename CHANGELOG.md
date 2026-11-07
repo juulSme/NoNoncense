@@ -17,6 +17,7 @@ failures, slow callbacks, and lease loss while protecting nonce uniqueness.
 - Prevent duplicate nonces when a factory is reinitialized shortly after lease loss.
 - Rename telemetry `:source` value `:cache` to `:store` and add `:loss`.
 - Fix an off-by-one timestamp overflow check.
+- RedisLease and SqlLease now attempt acquisition of up to 512 IDs (possibly pre-empted by the callback timeout), shuffled after the first three (so they still prefer the lowest available).
 
 ## [2.0.0]
 

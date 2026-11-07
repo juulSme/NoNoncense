@@ -84,43 +84,7 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:ok, 0, _, _} = RedisLease.acquire(10_000, fixtures.opts)
     end
 
-    test "retries a conditional conflict using a refreshed lease view" do
-      parent = self()
-      marker = "token.0." <> String.duplicate("a", 22)
-      responses = start_supervised({Agent, fn -> [[], ["0", marker]] end})
-      {:ok, response_agent} = responses
-      attempts = start_supervised(Supervisor.child_spec({Agent, fn -> 0 end}, id: :attempts))
-      {:ok, attempt_agent} = attempts
-
-      stub(Redix, :command, fn :conn, command ->
-        send(parent, {:redis_command, command})
-
-        case command do
-          ["HKEYS", "test-key"] ->
-            Agent.get_and_update(response_agent, fn [response | remaining] ->
-              {response, remaining}
-            end)
-            |> then(&{:ok, &1})
-
-          ["HSETEX", "test-key", "FNX", "PX", _ttl, "FIELDS", "2", id, _token, _marker, id] ->
-            Agent.get_and_update(attempt_agent, fn attempt ->
-              result = if attempt == 0, do: {:ok, 0}, else: {:ok, 1}
-              {result, attempt + 1}
-            end)
-        end
-      end)
-
-      assert {:ok, 1, {1, _token}, 10_000} =
-               RedisLease.acquire(10_000, with_connection: :conn, key: "test-key")
-
-      assert_receive {:redis_command,
-                      ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", "0" | _]}
-
-      assert_receive {:redis_command,
-                      ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", "1" | _]}
-    end
-
-    test "stops after five conditional conflicts" do
+    test "tries the next free ID after a conditional conflict" do
       parent = self()
 
       stub(Redix, :command, fn :conn, command ->
@@ -130,19 +94,47 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
           ["HKEYS", "test-key"] ->
             {:ok, []}
 
-          ["HSETEX", "test-key", "FNX", "PX", _ttl, "FIELDS", "2", "0", _token, _marker, "0"] ->
-            {:ok, 0}
+          ["HSETEX", "test-key", "FNX", "PX", _ttl, "FIELDS", "2", id, _token, _marker, id] ->
+            if id == "0", do: {:ok, 0}, else: {:ok, 1}
+        end
+      end)
+
+      assert {:ok, 1, {1, _token}, 10_000} =
+               RedisLease.acquire(10_000, with_connection: :conn, key: "test-key")
+
+      assert_received {:redis_command, ["HKEYS", "test-key"]}
+
+      assert_received {:redis_command,
+                       ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", "0" | _]}
+
+      assert_received {:redis_command,
+                       ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", "1" | _]}
+
+      refute_received {:redis_command, ["HKEYS" | _]}
+    end
+
+    test "returns a conflict after every free ID is claimed concurrently" do
+      parent = self()
+
+      stub(Redix, :command, fn :conn, command ->
+        send(parent, {:redis_command, command})
+
+        case command do
+          ["HKEYS", "test-key"] -> {:ok, []}
+          ["HSETEX", "test-key", "FNX" | _] -> {:ok, 0}
         end
       end)
 
       assert {:error, :conflict} =
                RedisLease.acquire(10_000, with_connection: :conn, key: "test-key")
 
-      assert_received {:redis_command, ["HSETEX" | _]}
-      assert_received {:redis_command, ["HSETEX" | _]}
-      assert_received {:redis_command, ["HSETEX" | _]}
-      assert_received {:redis_command, ["HSETEX" | _]}
-      assert_received {:redis_command, ["HSETEX" | _]}
+      for id <- 0..511 do
+        id = Integer.to_string(id)
+
+        assert_received {:redis_command,
+                         ["HSETEX", "test-key", "FNX", "PX", "10000", "FIELDS", "2", ^id | _]}
+      end
+
       refute_received {:redis_command, ["HSETEX" | _]}
     end
   end

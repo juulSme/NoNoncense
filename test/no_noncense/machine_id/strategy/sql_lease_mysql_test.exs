@@ -1,5 +1,6 @@
 defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
   use TestNoNoncense.DataCase, repo: :mysql
+  use Mimic
   import ExUnit.CaptureLog
   @moduletag :integration
 
@@ -37,6 +38,29 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
       assert lease.token == token
       assert lease.lock_version == 1
       assert DateTime.compare(lease.expires_at, DateTime.utc_now()) == :gt
+    end
+
+    test "concurrent acquires receive distinct ids" do
+      ids =
+        1..20
+        |> Task.async_stream(fn _ -> SqlLease.acquire(10_000, @opts) end, timeout: 10_000)
+        |> Enum.map(fn {:ok, {:ok, id, _lease, _ttl}} -> id end)
+
+      assert length(Enum.uniq(ids)) == 20
+    end
+
+    test "returns a conflict after every candidate is claimed concurrently" do
+      parent = self()
+
+      stub(MysqlRepo, :update_all, fn _query, _updates ->
+        send(parent, :claim_attempt)
+        {0, nil}
+      end)
+
+      assert {:error, :conflict} = SqlLease.acquire(10_000, @opts)
+
+      for _ <- 1..512, do: assert_received(:claim_attempt)
+      refute_received :claim_attempt
     end
   end
 

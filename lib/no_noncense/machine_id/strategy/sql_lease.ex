@@ -78,23 +78,18 @@ if Code.ensure_loaded?(Ecto.Migration) do
     def acquire(lease_duration, opts) do
       {repo, table} = process_opts(opts)
 
-      from(l in {table, NoNoncenseLease},
-        where: l.expires_at < db_now(),
-        order_by: l.id,
-        limit: 5
-      )
+      from(l in {table, NoNoncenseLease}, where: l.expires_at < db_now(), order_by: l.id)
       |> repo.all()
+      |> NoNoncense.MachineId.Strategy.Shared.shuffle_after_3()
       |> case do
         [] -> {:error, :exhausted}
-        available -> claim(available, repo, table, lease_duration)
+        available -> claim(available, repo, table, :crypto.strong_rand_bytes(16), lease_duration)
       end
     end
 
-    defp claim([], _, _, _), do: {:error, :conflict}
+    defp claim([], _, _, _, _), do: {:error, :conflict}
 
-    defp claim([%{id: id, lock_version: lock_version} | rest], repo, table, lease_duration) do
-      token = :crypto.strong_rand_bytes(16)
-
+    defp claim([%{id: id, lock_version: lock_version} | rest], repo, table, token, lease_duration) do
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.lock_version == ^lock_version,
         update: [
@@ -105,7 +100,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
       |> update_all(repo)
       |> case do
         :ok -> {:ok, id, {id, token}, lease_duration}
-        {:error, :update_failed} -> claim(rest, repo, table, lease_duration)
+        {:error, :update_failed} -> claim(rest, repo, table, token, lease_duration)
       end
     end
 
