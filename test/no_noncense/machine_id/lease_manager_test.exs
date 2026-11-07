@@ -1,5 +1,6 @@
 defmodule NoNoncense.MachineId.LeaseManagerTest do
   use ExUnit.Case, async: true
+  use Mimic
   import ExUnit.CaptureLog
 
   alias NoNoncense.MachineId.{LeaseStore, LeaseManager}
@@ -171,7 +172,331 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
     end
   end
 
+  describe "strategy failure isolation" do
+    for failure <- [:crash, :raise, :throw] do
+      test "retries startup acquisition after a strategy #{failure}" do
+        failure = unquote(failure)
+        {:ok, agent} = FakeStrategy.start_agent([failure, {:ok, 7, :lease, 100_000}], [])
+
+        capture_log(fn ->
+          name =
+            start_lease_manager!(
+              strategy: FakeStrategy,
+              strategy_opts: [agent: agent, notify: self()],
+              attempt: 0
+            )
+
+          assert_receive {:strategy_failure, :acquire, ^failure, worker}
+          refute Process.alive?(worker)
+          assert %{lease: :lease, machine_id: 7} = LeaseStore.get(store_name(name))
+          assert %{timer: {:renew, _ref}, attempt: 1} = :sys.get_state(name)
+          refute_received {:lease_lost, _reason}
+        end)
+      end
+
+      test "preserves the lease and recovers after a renewal strategy #{failure}" do
+        failure = unquote(failure)
+        instance = unique_name("nonce")
+
+        {:ok, agent} =
+          FakeStrategy.start_agent([{:ok, 7, :original, 100_000}], [
+            failure,
+            {:ok, :renewed, 100_000}
+          ])
+
+        name =
+          start_lease_manager!(
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: self()],
+            instances: [[name: instance]]
+          )
+
+        manager = Process.whereis(name)
+        lease = LeaseStore.get(store_name(name))
+
+        capture_log(fn ->
+          renew(name)
+          assert_receive {:strategy_failure, :renew, ^failure, worker}
+          assert %{timer: {:renew, _ref}, attempt: 2} = :sys.get_state(name)
+          refute Process.alive?(worker)
+          assert Process.whereis(name) == manager
+          assert LeaseStore.get(store_name(name)) == lease
+          assert <<_::64>> = NoNoncense.nonce(instance, 64)
+          refute_received {:lease_lost, _reason}
+
+          renew(name)
+          assert %{timer: {:renew, _ref}, attempt: 1} = :sys.get_state(name)
+          assert %{lease: :renewed} = LeaseStore.get(store_name(name))
+          assert Process.whereis(name) == manager
+        end)
+      end
+
+      test "retries reacquisition after a strategy #{failure}" do
+        failure = unquote(failure)
+        instance = unique_name("nonce")
+
+        {:ok, agent} =
+          FakeStrategy.start_agent(
+            [{:ok, 7, :original, 100_000}, failure, {:ok, 8, :replacement, 100_000}],
+            []
+          )
+
+        name =
+          start_lease_manager!(
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: self()],
+            instances: [[name: instance]]
+          )
+
+        manager = Process.whereis(name)
+
+        capture_log(fn ->
+          assert :ok = LeaseStore.lose(store_name(name), :external)
+          assert_receive {:strategy_failure, :acquire, ^failure, worker}
+          assert %{timer: {:acquire, ref}, attempt: 2} = :sys.get_state(name)
+          refute Process.alive?(worker)
+          assert Process.whereis(name) == manager
+          assert LeaseStore.get(store_name(name)) == nil
+          assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
+
+          send(name, {:timeout, ref, :acquire})
+          assert %{timer: {:renew, _ref}, attempt: 1} = :sys.get_state(name)
+          assert %{lease: :replacement, machine_id: 8} = LeaseStore.get(store_name(name))
+          assert <<_::64>> = NoNoncense.nonce(instance, 64)
+          assert Process.whereis(name) == manager
+          assert_receive {:lease_lost, :external}
+          refute_received {:lease_lost, _reason}
+        end)
+      end
+
+      test "reacquires despite a background release strategy #{failure}" do
+        failure = unquote(failure)
+        instance = unique_name("nonce")
+
+        {:ok, agent} =
+          FakeStrategy.start_agent(
+            [{:ok, 7, :original, 100_000}, {:ok, 8, :replacement, 100_000}],
+            []
+          )
+
+        name =
+          start_lease_manager!(
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: self(), release_failure: {:original, failure}],
+            instances: [[name: instance]]
+          )
+
+        manager = Process.whereis(name)
+
+        capture_log(fn ->
+          assert :ok = LeaseStore.lose(store_name(name), :external)
+          assert_receive {:strategy_failure, :release, ^failure, worker}
+          worker_ref = Process.monitor(worker)
+          assert_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}
+          assert_receive {:acquire, {:ok, 8, :replacement, 100_000}}
+          assert %{timer: {:renew, _ref}, attempt: 1} = :sys.get_state(name)
+          assert Process.whereis(name) == manager
+          assert %{lease: :replacement, machine_id: 8} = LeaseStore.get(store_name(name))
+          assert <<_::64>> = NoNoncense.nonce(instance, 64)
+          assert_receive {:lease_lost, :external}
+          refute_received {:lease_lost, _reason}
+        end)
+      end
+
+      test "shuts down gracefully despite a release strategy #{failure}" do
+        failure = unquote(failure)
+        instance = unique_name("nonce")
+        {:ok, agent} = FakeStrategy.start_agent([{:ok, 7, :original, 100_000}], [])
+
+        name =
+          start_lease_manager!(
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: self(), release_failure: {:original, failure}],
+            instances: [[name: instance]]
+          )
+
+        manager = Process.whereis(name)
+        manager_ref = Process.monitor(manager)
+
+        capture_log(fn ->
+          assert :ok = GenServer.stop(name, :normal)
+          assert_receive {:strategy_failure, :release, ^failure, worker}
+          refute Process.alive?(worker)
+          assert_receive {:DOWN, ^manager_ref, :process, ^manager, :normal}
+          assert LeaseStore.get(store_name(name)) == nil
+          assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
+          refute_received {:lease_lost, _reason}
+        end)
+      end
+    end
+  end
+
+  describe "manager boundaries" do
+    test "rejects non-positive and non-integer callback timeouts" do
+      dependencies = start_dependencies!(unique_name("lm"), [])
+
+      for timeout <- [0, -1, nil, :infinity, "5000", 1.5] do
+        assert_raise ArgumentError, ":callback_timeout must be a positive integer", fn ->
+          LeaseManager.start_link(
+            [strategy: FakeStrategy, callback_timeout: timeout] ++ dependencies
+          )
+        end
+      end
+    end
+
+    test "ignores stale renewal and acquisition timers without calling the strategy" do
+      {:ok, agent} =
+        FakeStrategy.start_agent([{:ok, 7, :lease, 100_000}], [{:ok, :lease, 100_000}])
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify: self()]
+        )
+
+      assert_receive {:acquire, {:ok, 7, :lease, 100_000}}
+      {:renew, old_ref} = :sys.get_state(name).timer
+      renew(name)
+      current = :sys.get_state(name)
+      assert_receive {:renew, {:ok, :lease, 100_000}}
+      refute current.timer == {:renew, old_ref}
+
+      for kind <- [:renew, :acquire] do
+        send(name, {:timeout, old_ref, kind})
+        assert :sys.get_state(name) == current
+      end
+
+      refute_received {:acquire, _result}
+      refute_received {:renew, _result}
+    end
+
+    test "logs unexpected messages without changing the lease or schedule" do
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 7, :lease, 100_000}], [])
+      name = start_lease_manager!(strategy: FakeStrategy, strategy_opts: [agent: agent])
+      current = :sys.get_state(name)
+      lease = LeaseStore.get(store_name(name))
+
+      log =
+        capture_log(fn ->
+          send(name, :unexpected)
+          assert :sys.get_state(name) == current
+        end)
+
+      assert log =~ "Unknown handle_info message received: :unexpected"
+      assert LeaseStore.get(store_name(name)) == lease
+    end
+
+    test "does not renew a locally expired lease before its expiry timer is handled" do
+      {:ok, agent} = FakeStrategy.start_agent([{:ok, 7, :lease, 100_000}], [:crash])
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify: self()]
+        )
+
+      now = System.monotonic_time(:millisecond)
+      :sys.replace_state(store_name(name), &put_in(&1.lease.expires_at_mono, now))
+      renew(name)
+
+      assert %{timer: nil, attempt: 1} = :sys.get_state(name)
+      assert LeaseStore.get(store_name(name)) == nil
+      refute_received {:strategy_failure, :renew, _failure, _worker}
+      refute_received {:lease_lost, _reason}
+    end
+
+    test "resumes the stored lease after an abnormal manager exit without resetting factories" do
+      instance = unique_name("nonce")
+
+      {:ok, agent} =
+        FakeStrategy.start_agent([{:ok, 7, :lease, 100_000}], [{:ok, :lease, 100_000}])
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify: self()],
+          instances: [[name: instance]],
+          restart: :permanent
+        )
+
+      assert_receive {:acquire, {:ok, 7, :lease, 100_000}}
+      manager = Process.whereis(name)
+      manager_ref = Process.monitor(manager)
+      config = :persistent_term.get(instance)
+
+      capture_log(fn ->
+        assert :ok = GenServer.stop(name, :simulated_failure)
+        assert_receive {:DOWN, ^manager_ref, :process, ^manager, :simulated_failure}
+        assert_receive {:renew, {:ok, :lease, 100_000}}
+        assert %{timer: {:renew, _ref}} = :sys.get_state(name)
+        refute Process.whereis(name) == manager
+        assert %{lease: :lease, machine_id: 7} = LeaseStore.get(store_name(name))
+        assert :persistent_term.get(instance) == config
+        assert <<_::64>> = NoNoncense.nonce(instance, 64)
+        refute_received {:acquire, _result}
+        refute_received {:release, _lease}
+        refute_received {:lease_lost, _reason}
+      end)
+    end
+  end
+
   describe "initial acquisition" do
+    test "retries acquisition with an infinite startup deadline" do
+      {:ok, agent} =
+        FakeStrategy.start_agent([{:error, :unavailable}, {:ok, 7, :lease, 100_000}], [])
+
+      capture_log(fn ->
+        name =
+          start_lease_manager!(
+            strategy: FakeStrategy,
+            strategy_opts: [agent: agent, notify: self()],
+            acquire_timeout: :infinity,
+            attempt: 0
+          )
+
+        assert_receive {:acquire, {:error, :unavailable}}
+        assert_receive {:acquire, {:ok, 7, :lease, 100_000}}
+        assert %{lease: :lease, machine_id: 7} = LeaseStore.get(store_name(name))
+        assert %{timer: {:renew, _ref}} = :sys.get_state(name)
+      end)
+    end
+
+    test "releases an expired startup grant and acquires a replacement" do
+      name = unique_name("lm")
+      instance = unique_name("nonce")
+      dependencies = start_dependencies!(name, instances: [[name: instance]])
+      store = dependencies[:lease_store]
+
+      {:ok, agent} =
+        FakeStrategy.start_agent(
+          [{:ok, 7, :expired, 30_000}, {:ok, 8, :replacement, 30_000}],
+          []
+        )
+
+      expired_now = System.monotonic_time(:millisecond) + 100_000
+      stub(System, :monotonic_time, &:erlang.monotonic_time/1)
+      expect(System, :monotonic_time, fn :millisecond -> expired_now end)
+      allow(System, self(), Process.whereis(store))
+
+      capture_log(fn ->
+        start_supervised!(
+          {LeaseManager,
+           [
+             name: name,
+             strategy: FakeStrategy,
+             strategy_opts: [agent: agent, notify: self()],
+             acquire_timeout: 1_000
+           ] ++ dependencies}
+        )
+
+        assert_receive {:release, :expired}
+        assert_receive {:acquire, {:ok, 8, :replacement, 30_000}}
+        assert %{lease: :replacement, machine_id: 8} = LeaseStore.get(store)
+        assert %{timer: {:renew, _ref}} = :sys.get_state(name)
+        assert <<_::64>> = NoNoncense.nonce(instance, 64)
+      end)
+    end
+
     test "requires a strategy, lease store and task supervisor" do
       assert_raise ArgumentError, ":strategy must be provided", fn ->
         LeaseManager.start_link(lease_store: unique_name("store"))
