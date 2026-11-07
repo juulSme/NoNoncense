@@ -12,6 +12,7 @@ failures, slow callbacks, and lease loss while protecting nonce uniqueness.
 
 - Enforce local lease expiry independently of strategy callbacks, disabling factories on lease loss, expiry, or store shutdown. Release locally rejected leases on a best-effort basis.
 - Add `:callback_timeout` to bound acquisition, renewal, and release calls.
+- Remove internal `LeaseManager.machine_id/0,1`, `LeaseManager.lease_lost/0,1,2`, and `LeaseCache` APIs. Direct use was not a supported integration; the supported `NoNoncense.MachineId` supervision API is unchanged.
 - Require strategy `release/2` callbacks to be idempotent and ignore stale leases; they may run after a replacement is acquired.
 - `SqlLease` prevents delayed renewals from reviving released leases.
 - Prevent duplicate nonces when a factory is reinitialized shortly after lease loss.
