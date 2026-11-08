@@ -57,6 +57,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
   #   * `:on_lease_lost` runs inside this process, after reacquisition is scheduled. A callback
   #     that blocks therefore delays everything else the manager does.
   use GenServer
+  use NoNoncense.Constants
 
   alias NoNoncense.MachineId.LeaseStore
   alias NoNoncense.MachineId.LeaseManager.{Backoff, Bootstrap, StrategyCall}
@@ -242,7 +243,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
   # subtracting it again leaves one margin of retry room before the local expiry.
   defp schedule_renew(state, lease) do
     until_expiry = min(state.renew_interval, LeaseStore.remaining_ms(lease))
-    delay = max(0, until_expiry - LeaseStore.safety_margin_ms())
+    delay = max(0, until_expiry - @lease_safety_margin)
     state |> set_timer(:renew, delay) |> Map.put(:attempt, 1)
   end
 

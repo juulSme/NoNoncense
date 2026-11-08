@@ -41,6 +41,11 @@ defmodule NoNoncense.Constants do
 
       # padding to extend a 64-bits encrypted nonce to 96 bits
       @zero32 <<0::32>>
+
+      # minimal lease ttl in milliseconds
+      @min_lease_ttl 30_000
+      # lease is considered expired 10s before its nominal ttl
+      @lease_safety_margin 10_000
     end
   end
 end

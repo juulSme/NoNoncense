@@ -30,12 +30,12 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
   @startup_sources [:initial, :store]
 
   @type result ::
-          {:ok, LeaseStore.lease()}
+          {:ok, LeaseStore.stored_lease()}
           | {:error, :retry | :lost | :rejected, term()}
 
   @doc """
   Acquires a lease and records it in the store.
-
+  LeaseStore.stored_lease
   A lease the strategy granted but the store refused is released and reported as `:rejected`.
   """
   @spec acquire(map(), atom(), keyword()) :: result()

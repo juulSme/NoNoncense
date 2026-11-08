@@ -16,7 +16,7 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   `:acquire_timeout` bounds all of it, including the strategy calls themselves.
   This runs synchronously, so the manager does not start until it has a valid lease.
   """
-  @spec acquire_initial_id(map()) :: {:ok, LeaseStore.lease()} | {:error, term()}
+  @spec acquire_initial_id(map()) :: {:ok, LeaseStore.stored_lease()} | {:error, term()}
   def acquire_initial_id(state) do
     # An absolute monotonic time, so every step below can ask how much time is left
     deadline = state.acquire_timeout
