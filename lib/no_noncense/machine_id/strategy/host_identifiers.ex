@@ -30,7 +30,7 @@ defmodule NoNoncense.MachineId.Strategy.HostIdentifiers do
   > Your `node_list` must be the same for every node or the generated machine IDs will not be unique.
   """
   use NoNoncense.MachineId.Strategy
-  @defaults %{machine_id: nil, node_list: []}
+  @defaults %{node_list: []}
 
   @type host_identifiers :: [binary() | atom()]
   @type opt :: {:node_list, host_identifiers()}
