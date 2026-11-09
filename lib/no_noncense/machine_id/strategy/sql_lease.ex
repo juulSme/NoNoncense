@@ -35,6 +35,9 @@ if Code.ensure_loaded?(Ecto.Migration) do
 
           def change, do: NoNoncense.MachineId.Strategy.SqlLease.migrate()
         end
+
+    Note that the migration has to run **before** you can configure `NoNoncense.MachineId` with this strategy.
+    Without the migration, the strategy can't acquire a machine ID and will prevent the application from starting.
     """
 
     # Implementation notes:
