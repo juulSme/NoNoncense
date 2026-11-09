@@ -69,6 +69,18 @@ defmodule NoNoncense.MachineId.ConflictGuardTest do
     refute_received :conflict
   end
 
+  test "broadcasts only the resolved machine ID and start timestamp", %{pid: pid} do
+    recipient = unique_name("peer_guard")
+    Process.register(self(), recipient)
+    state = :sys.replace_state(pid, &%{&1 | name: recipient})
+    node = Node.self()
+
+    send(pid, {:nodeup, node})
+
+    assert_receive {:"$gen_cast", {:id_from, ^node, payload}}
+    assert payload == %{machine_id: 0, init_at: state.init_at}
+  end
+
   test "broadcasts the resolved machine ID from a getter" do
     test_pid = self()
     name = unique_name("conflict_guard")

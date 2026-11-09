@@ -86,7 +86,7 @@ defmodule NoNoncense.MachineId.ConflictGuard do
   def handle_info({:nodeup, node}, state) do
     GenServer.cast(
       {state.name, node},
-      {:id_from, Node.self(), %{state | machine_id: state.machine_id.()}}
+      {:id_from, Node.self(), %{machine_id: state.machine_id.(), init_at: state.init_at}}
     )
 
     {:noreply, state}
