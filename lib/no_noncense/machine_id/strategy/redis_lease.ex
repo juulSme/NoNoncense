@@ -29,7 +29,19 @@ if Code.ensure_loaded?(Redix) do
           ```
         2. To support connection pools, pass a function that calls its argument function with a connection:
           ```
-          with_connection: fn fun -> :poolboy.transaction(MyApp.RedixPool, fun) end
+          with_connection: fn fun ->
+            conn = :poolboy.checkout(MyApp.RedixPool)
+
+            try do
+              fun.(conn)
+            after
+              :poolboy.checkin(MyApp.RedixPool, conn)
+            end
+          end
+          ```
+          (or use the simpler poolboy transaction syntax)
+          ```
+          with_connection: &:poolboy.transaction(MyApp.RedixPool, &1)
           ```
 
       * `:key` - the Redis hash key to store leases under (default `"no_noncense_leases"`)
@@ -60,6 +72,7 @@ if Code.ensure_loaded?(Redix) do
 
     @default_key "no_noncense_leases"
     @all_ids Enum.to_list(0..511)
+    @with_connection_err_msg "with_connection must be a fun/1 or a Redix connection"
 
     @impl true
     def acquire(lease_duration, opts) do
@@ -119,21 +132,17 @@ if Code.ensure_loaded?(Redix) do
     ###########
 
     defp process_opts(opts) do
-      with_conn = Keyword.fetch!(opts, :with_connection)
-
-      with_conn =
-        case with_conn do
-          fun when is_function(fun, 1) -> fun
-          conn when is_atom(conn) or is_pid(conn) -> & &1.(conn)
-          conn = {atom, node} when is_atom(atom) and is_atom(node) -> & &1.(conn)
-          _ -> raise ArgumentError, "with_connection must be a fun/1 or a Redix connection"
-        end
-
+      with_conn = Keyword.fetch!(opts, :with_connection) |> process_with_conn()
       key = opts[:key] || @default_key
       {with_conn, key}
     end
 
-    defp exec(with_conn, command), do: with_conn.(&Redix.command(&1, command))
+    defp process_with_conn(with_conn) when is_function(with_conn, 1), do: with_conn
+    defp process_with_conn(conn) when is_atom(conn) or is_pid(conn), do: & &1.(conn)
+    defp process_with_conn(c = {atom, node}) when is_atom(atom) and is_atom(node), do: & &1.(c)
+    defp process_with_conn(_), do: raise(ArgumentError, @with_connection_err_msg)
+
+    defp exec(with_conn, command), do: with_conn.(fn conn -> Redix.command(conn, command) end)
 
     defp leased_ids(keys), do: keys |> Enum.flat_map(&key_to_id/1) |> :ordsets.from_list()
 
@@ -143,8 +152,7 @@ if Code.ensure_loaded?(Redix) do
 
     defp id?(binary), do: not marker?(binary)
 
-    defp marker?(<<"token.", _::binary>>), do: true
-    defp marker?(_), do: false
+    defp marker?(binary), do: match?("token." <> _, binary)
 
     defp int_or_ignore(binary) do
       try do: [String.to_integer(binary)], rescue: (_ -> [])
@@ -156,9 +164,12 @@ if Code.ensure_loaded?(Redix) do
       ttl = Integer.to_string(ttl)
       id = Integer.to_string(id)
       marker_key = "token.#{id}.#{token}"
-      condition = if condition == :if_all_exist, do: "FXX", else: "FNX"
+      condition = to_condition_code(condition)
 
       ["HSETEX", key, condition, "PX", ttl, "FIELDS", "2", id, token, marker_key, id]
     end
+
+    defp to_condition_code(:if_all_exist), do: "FXX"
+    defp to_condition_code(:if_none_exist), do: "FNX"
   end
 end
