@@ -169,9 +169,9 @@ defmodule NoNoncense.MachineId.LeaseManager do
   # so we are not notified of our own shutdown. Any other exit leaves the lease in the store.
   @impl true
   def terminate(reason, state) when reason in [:normal, :shutdown] do
-    lease = LeaseStore.get(state.lease_store)
+    local_lease = LeaseStore.get(state.lease_store)
     :ok = LeaseStore.discard(state.lease_store)
-    if lease, do: StrategyCall.release(state, lease.lease, :shutdown)
+    if local_lease, do: StrategyCall.release(state, local_lease.strategy_lease, :shutdown)
     :ok
   end
 
@@ -184,8 +184,8 @@ defmodule NoNoncense.MachineId.LeaseManager do
   # The renew timer fired. Each outcome either schedules the next renewal, schedules a retry, or
   # leaves the store to drive recovery through its loss notification.
   defp renew(state) do
-    with lease when not is_nil(lease) <- LeaseStore.get(state.lease_store),
-         {:ok, renewed_lease} <- StrategyCall.renew(state, lease.lease, :scheduled) do
+    with local_lease when not is_nil(local_lease) <- LeaseStore.get(state.lease_store),
+         {:ok, renewed_lease} <- StrategyCall.renew(state, local_lease.strategy_lease, :scheduled) do
       Logger.debug("Lease of ID #{renewed_lease.machine_id} renewed.")
       schedule_renew(state, renewed_lease)
     else
@@ -214,12 +214,12 @@ defmodule NoNoncense.MachineId.LeaseManager do
   end
 
   # Runs once per lost lease, when the store reports it. The factories are already off by now.
-  defp on_lost(state, lease, reason) do
-    Logger.critical("Lease of ID #{lease.machine_id} lost: #{inspect(reason)}")
-    Telemetry.lease_lost(reason, LeaseStore.remaining_ms(lease))
+  defp on_lost(state, local_lease, reason) do
+    Logger.critical("Lease of ID #{local_lease.machine_id} lost: #{inspect(reason)}")
+    Telemetry.lease_lost(reason, LeaseStore.remaining_ms(local_lease))
 
     # The old token is released in the background so reacquisition does not wait for it
-    StrategyCall.release_async(state, lease.lease)
+    StrategyCall.release_async(state, local_lease.strategy_lease)
     state = cancel_timer(state)
     # A deterministic strategy would hand back the same ID, so there is nothing to reacquire
     state = if state.strategy.deterministic?(), do: state, else: set_timer(state, :acquire, 0)

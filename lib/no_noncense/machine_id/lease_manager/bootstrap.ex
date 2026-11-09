@@ -16,14 +16,14 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   `:acquire_timeout` bounds all of it, including the strategy calls themselves.
   This runs synchronously, so the manager does not start until it has a valid lease.
   """
-  @spec acquire_initial_id(map()) :: {:ok, LeaseStore.stored_lease()} | {:error, term()}
+  @spec acquire_initial_id(map()) :: {:ok, LeaseStore.local_lease()} | {:error, term()}
   def acquire_initial_id(state) do
     # An absolute monotonic time, so every step below can ask how much time is left
     deadline = state.acquire_timeout
     deadline = if deadline == :infinity, do: deadline, else: deadline + now_mono()
 
     case renew_stored(state, deadline) do
-      {:ok, lease} -> {:ok, lease}
+      {:ok, local_lease} -> {:ok, local_lease}
       # The strategy grants TTLs we cannot use; retrying would get the same answer
       {:error, :rejected, :illegal_ttl} -> {:error, :illegal_ttl}
       _ -> acquire_new_until(state, deadline)
@@ -36,21 +36,21 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   # manager is already registered, and a loss notification would start its loss handling.
   defp renew_stored(state, deadline) do
     case LeaseStore.get(state.lease_store) do
-      %{} = lease -> attempt_renew(state, lease, deadline)
+      %{} = local_lease -> attempt_renew(state, local_lease, deadline)
       nil -> LeaseStore.discard(state.lease_store) && nil
     end
   end
 
-  defp attempt_renew(state, lease, deadline) do
-    case StrategyCall.renew(state, lease.lease, :store, deadline: deadline) do
+  defp attempt_renew(state, local_lease, deadline) do
+    case StrategyCall.renew(state, local_lease.strategy_lease, :store, deadline: deadline) do
       {:ok, renewed = %{machine_id: machine_id}} = ok ->
         Logger.info("Lease of ID #{machine_id} resumed from store, #{valid_for(renewed)}.")
         ok
 
       failure ->
-        Logger.debug("Failed to renew stored ID #{lease.machine_id}: #{inspect(failure)}")
+        Logger.debug("Failed to renew stored ID #{local_lease.machine_id}: #{inspect(failure)}")
         LeaseStore.discard(state.lease_store)
-        StrategyCall.release_async(state, lease.lease)
+        StrategyCall.release_async(state, local_lease.strategy_lease)
         failure
     end
   end

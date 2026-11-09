@@ -188,7 +188,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
           assert_receive {:strategy_failure, :acquire, ^failure, worker}
           refute Process.alive?(worker)
-          assert %{lease: :lease, machine_id: 7} = LeaseStore.get(store_name(name))
+          assert %{strategy_lease: :lease, machine_id: 7} = LeaseStore.get(store_name(name))
           assert %{timer: {:renew, _ref}, attempt: 1} = :sys.get_state(name)
           refute_received {:lease_lost, _reason}
         end)
@@ -226,7 +226,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
           renew(name)
           assert %{timer: {:renew, _ref}, attempt: 1} = :sys.get_state(name)
-          assert %{lease: :renewed} = LeaseStore.get(store_name(name))
+          assert %{strategy_lease: :renewed} = LeaseStore.get(store_name(name))
           assert Process.whereis(name) == manager
         end)
       end
@@ -261,7 +261,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
           send(name, {:timeout, ref, :acquire})
           assert %{timer: {:renew, _ref}, attempt: 1} = :sys.get_state(name)
-          assert %{lease: :replacement, machine_id: 8} = LeaseStore.get(store_name(name))
+          assert %{strategy_lease: :replacement, machine_id: 8} = LeaseStore.get(store_name(name))
           assert <<_::64>> = NoNoncense.nonce(instance, 64)
           assert Process.whereis(name) == manager
           assert_receive {:lease_lost, :external}
@@ -296,7 +296,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
           assert_receive {:acquire, {:ok, 8, :replacement, 100_000}}
           assert %{timer: {:renew, _ref}, attempt: 1} = :sys.get_state(name)
           assert Process.whereis(name) == manager
-          assert %{lease: :replacement, machine_id: 8} = LeaseStore.get(store_name(name))
+          assert %{strategy_lease: :replacement, machine_id: 8} = LeaseStore.get(store_name(name))
           assert <<_::64>> = NoNoncense.nonce(instance, 64)
           assert_receive {:lease_lost, :external}
           refute_received {:lease_lost, _reason}
@@ -396,7 +396,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         )
 
       now = System.monotonic_time(:millisecond)
-      :sys.replace_state(store_name(name), &put_in(&1.lease.expires_at_mono, now))
+      :sys.replace_state(store_name(name), &put_in(&1.local_lease.expires_at_mono, now))
       renew(name)
 
       assert %{timer: nil, attempt: 1} = :sys.get_state(name)
@@ -430,7 +430,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         assert_receive {:renew, {:ok, :lease, 100_000}}
         assert %{timer: {:renew, _ref}} = :sys.get_state(name)
         refute Process.whereis(name) == manager
-        assert %{lease: :lease, machine_id: 7} = LeaseStore.get(store_name(name))
+        assert %{strategy_lease: :lease, machine_id: 7} = LeaseStore.get(store_name(name))
         assert :persistent_term.get(instance) == config
         assert <<_::64>> = NoNoncense.nonce(instance, 64)
         refute_received {:acquire, _result}
@@ -456,7 +456,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
         assert_receive {:acquire, {:error, :unavailable}}
         assert_receive {:acquire, {:ok, 7, :lease, 100_000}}
-        assert %{lease: :lease, machine_id: 7} = LeaseStore.get(store_name(name))
+        assert %{strategy_lease: :lease, machine_id: 7} = LeaseStore.get(store_name(name))
         assert %{timer: {:renew, _ref}} = :sys.get_state(name)
       end)
     end
@@ -491,7 +491,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
 
         assert_receive {:release, :expired}
         assert_receive {:acquire, {:ok, 8, :replacement, 30_000}}
-        assert %{lease: :replacement, machine_id: 8} = LeaseStore.get(store)
+        assert %{strategy_lease: :replacement, machine_id: 8} = LeaseStore.get(store)
         assert %{timer: {:renew, _ref}} = :sys.get_state(name)
         assert <<_::64>> = NoNoncense.nonce(instance, 64)
       end)
@@ -633,7 +633,7 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       send(backend, :commit)
       assert_receive {:committed, {:ok, 3, :abandoned, 100_000}}
       assert LeaseStore.machine_id(store_name(name)) == 4
-      assert %{lease: :current} = LeaseStore.get(store_name(name))
+      assert %{strategy_lease: :current} = LeaseStore.get(store_name(name))
     end
 
     test "falls back to acquisition when cached renewal times out" do

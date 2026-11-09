@@ -38,14 +38,14 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     %{name: name, pid: pid} = start_store!()
     before = :erlang.monotonic_time(:millisecond)
 
-    assert {:ok, lease} = put(name, 7, :token, 30_000)
+    assert {:ok, local_lease} = put(name, 7, :token, 30_000)
 
-    assert lease.machine_id == 7
-    assert lease.lease == :token
-    assert_in_delta lease.expires_at_mono, before + 20_000, 10
-    assert LeaseStore.get(name) == lease
+    assert local_lease.machine_id == 7
+    assert local_lease.strategy_lease == :token
+    assert_in_delta local_lease.expires_at_mono, before + 20_000, 10
+    assert LeaseStore.get(name) == local_lease
     assert LeaseStore.machine_id(name) == 7
-    assert LeaseStore.valid?(lease)
+    assert LeaseStore.valid?(local_lease)
     assert Process.alive?(pid)
   end
 
@@ -85,7 +85,7 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
 
     assert {:ok, renewed} = renew(name, :new_token, 30_000)
     assert renewed.machine_id == 7
-    assert renewed.lease == :new_token
+    assert renewed.strategy_lease == :new_token
     assert LeaseStore.get(name) == renewed
     assert Process.alive?(pid)
   end
@@ -133,7 +133,7 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     state(counters_ref: new_counters) = :persistent_term.get(delayed_instance)
     refute new_counters == old_counters
     assert LeaseStore.get(name) == nil
-    assert %{lease: nil, timer: nil} = :sys.get_state(name)
+    assert %{local_lease: nil, timer: nil} = :sys.get_state(name)
     assert Process.alive?(pid)
 
     for instance <- [early_instance, delayed_instance] do
@@ -148,7 +148,7 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     put(name, 7, :token, 30_000)
     now = :erlang.monotonic_time(:millisecond)
 
-    :sys.replace_state(name, fn state -> put_in(state.lease.expires_at_mono, now) end)
+    :sys.replace_state(name, fn state -> put_in(state.local_lease.expires_at_mono, now) end)
     assert renew(name, :token, 30_000) == {:error, :lost}
     assert_receive {:lease_lost, _, :expired}
     assert LeaseStore.get(name) == nil
@@ -217,7 +217,7 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     put(name, 7, :token, 30_000)
     now = :erlang.monotonic_time(:millisecond)
 
-    :sys.replace_state(name, fn state -> put_in(state.lease.expires_at_mono, now) end)
+    :sys.replace_state(name, fn state -> put_in(state.local_lease.expires_at_mono, now) end)
     assert LeaseStore.get(name) == nil
     assert LeaseStore.machine_id(name) == nil
   end

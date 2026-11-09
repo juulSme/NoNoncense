@@ -117,7 +117,7 @@ defmodule NoNoncense.MachineId.IntegrationTest do
       %{lease_manager: lm, lease_store: store} =
         start_machine_id!([instances: [[name: db_name]]], fixtures.conn, fixtures.key)
 
-      %{lease: {id, token}} = LeaseStore.get(store)
+      %{strategy_lease: {id, token}} = LeaseStore.get(store)
 
       assert {:ok, [1, 1]} =
                Redix.command(fixtures.conn, [

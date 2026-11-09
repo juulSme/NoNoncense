@@ -30,12 +30,12 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
   @startup_sources [:initial, :store]
 
   @type result ::
-          {:ok, LeaseStore.stored_lease()}
+          {:ok, LeaseStore.local_lease()}
           | {:error, :retry | :lost | :rejected, term()}
 
   @doc """
   Acquires a lease and records it in the store.
-  LeaseStore.stored_lease
+  LeaseStore.local_lease
   A lease the strategy granted but the store refused is released and reported as `:rejected`.
   """
   @spec acquire(map(), atom(), keyword()) :: result()
@@ -86,7 +86,7 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
 
   # Passes through what the store accepted. A refusal means the strategy is still holding a lease
   # we cannot use, so release it and report why.
-  defp accept({:ok, stored}, _state, _lease, _source, _deadline), do: {:ok, stored}
+  defp accept({:ok, local_lease}, _state, _lease, _source, _deadline), do: {:ok, local_lease}
 
   defp accept({:error, reason}, state, lease, source, deadline) do
     reject(state, lease, reason, source, deadline)
