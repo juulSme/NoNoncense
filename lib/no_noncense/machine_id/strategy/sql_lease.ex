@@ -97,10 +97,10 @@ if Code.ensure_loaded?(Ecto.Migration) do
           inc: [lock_version: 1]
         ]
       )
-      |> update_all(repo)
+      |> repo.update_all([])
       |> case do
-        :ok -> {:ok, id, {id, token}, lease_duration}
-        {:error, :update_failed} -> claim(rest, repo, table, token, lease_duration)
+        {1, _} -> {:ok, id, {id, token}, lease_duration}
+        _ -> claim(rest, repo, table, token, lease_duration)
       end
     end
 
@@ -112,10 +112,10 @@ if Code.ensure_loaded?(Ecto.Migration) do
         where: l.id == ^id and l.token == ^token,
         update: [set: [expires_at: db_now_add(^lease_duration)], inc: [lock_version: 1]]
       )
-      |> update_all(repo)
+      |> repo.update_all([])
       |> case do
-        :ok -> {:ok, {id, token}, lease_duration}
-        {:error, :update_failed} -> {:error, :lost, :expired}
+        {1, _} -> {:ok, {id, token}, lease_duration}
+        _ -> {:error, :lost, :expired}
       end
     end
 
@@ -127,7 +127,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
         where: l.id == ^id and l.token == ^token,
         update: [set: [token: nil, expires_at: db_now()], inc: [lock_version: 1]]
       )
-      |> update_all(repo)
+      |> repo.update_all([])
 
       :ok
     end
@@ -173,13 +173,6 @@ if Code.ensure_loaded?(Ecto.Migration) do
       repo = Keyword.fetch!(opts, :repo)
       table = opts[:table] || @default_table_name
       {repo, table}
-    end
-
-    defp update_all(query, repo) do
-      case repo.update_all(query, []) do
-        {1, _} -> :ok
-        {0, _} -> {:error, :update_failed}
-      end
     end
   end
 end
