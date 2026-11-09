@@ -96,6 +96,6 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   defp time_left(:infinity), do: :infinity
   defp time_left(deadline), do: max(0, deadline - now_mono())
 
-  defp valid_for(lease), do: "valid for #{LeaseStore.remaining_ms(lease)}ms locally"
+  defp valid_for(lease), do: "valid for #{div(LeaseStore.remaining_ms(lease), 1000)}s locally"
   defp now_mono(), do: System.monotonic_time(:millisecond)
 end

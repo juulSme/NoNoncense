@@ -163,8 +163,6 @@ defmodule NoNoncense.MachineId.LeaseManager do
     {:noreply, state}
   end
 
-  def handle_info(msg, state), do: unknown_message(:handle_info, msg, state)
-
   # Graceful stops hand the lease back. Discarding first turns the factories off and is silent,
   # so we are not notified of our own shutdown. Any other exit leaves the lease in the store.
   @impl true
@@ -233,7 +231,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
   defp retry(state, kind, reason) do
     delay = Backoff.delay(state.attempt, 1000, state.renew_interval)
     label = if kind == :renew, do: "Lease renewal", else: "Reacquisition"
-    Logger.warning("#{label} failed (retry in #{delay}ms): #{inspect(reason)}")
+    Logger.warning("#{label} failed (retry in #{div(delay, 1000)}s): #{inspect(reason)}")
     Telemetry.lease_retry(kind, state.attempt, delay, reason)
 
     state |> set_timer(kind, delay) |> Map.update!(:attempt, &(&1 + 1))
@@ -249,19 +247,13 @@ defmodule NoNoncense.MachineId.LeaseManager do
 
   # At most one timer is pending; setting a new one cancels the old.
   defp set_timer(state, kind, delay) do
-    state = cancel_timer(state)
-    %{state | timer: {kind, :erlang.start_timer(delay, self(), kind)}}
+    state |> cancel_timer() |> Map.put(:timer, {kind, :erlang.start_timer(delay, self(), kind)})
   end
-
-  defp cancel_timer(%{timer: nil} = state), do: state
 
   defp cancel_timer(%{timer: {_kind, ref}} = state) do
     Process.cancel_timer(ref)
     %{state | timer: nil}
   end
 
-  defp unknown_message(callback, msg, state) do
-    Logger.warning("Unknown #{callback} message received: #{inspect(msg)}")
-    {:noreply, state}
-  end
+  defp cancel_timer(state), do: state
 end

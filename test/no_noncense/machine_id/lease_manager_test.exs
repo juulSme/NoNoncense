@@ -370,22 +370,6 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       refute_received {:renew, _result}
     end
 
-    test "logs unexpected messages without changing the lease or schedule" do
-      {:ok, agent} = FakeStrategy.start_agent([{:ok, 7, :lease, 100_000}], [])
-      name = start_lease_manager!(strategy: FakeStrategy, strategy_opts: [agent: agent])
-      current = :sys.get_state(name)
-      lease = LeaseStore.get(store_name(name))
-
-      log =
-        capture_log(fn ->
-          send(name, :unexpected)
-          assert :sys.get_state(name) == current
-        end)
-
-      assert log =~ "Unknown handle_info message received: :unexpected"
-      assert LeaseStore.get(store_name(name)) == lease
-    end
-
     test "does not renew a locally expired lease before its expiry timer is handled" do
       {:ok, agent} = FakeStrategy.start_agent([{:ok, 7, :lease, 100_000}], [:crash])
 
