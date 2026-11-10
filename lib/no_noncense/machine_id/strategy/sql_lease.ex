@@ -122,7 +122,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
       |> repo.update_all([])
       |> case do
         {1, _} -> {:ok, {id, token}, lease_duration}
-        _ -> {:error, :lost, :expired}
+        _ -> {:error, :lost, :not_owner}
       end
     end
 

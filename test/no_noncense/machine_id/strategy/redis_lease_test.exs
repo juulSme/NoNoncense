@@ -159,7 +159,7 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       assert {:ok, marker} = marker_field(fixtures.conn, fixtures.key, 0)
       Redix.command(fixtures.conn, ["HDEL", fixtures.key, "0", marker])
 
-      assert {:error, :lost, :expired} =
+      assert {:error, :lost, :not_owner} =
                RedisLease.renew(lease, 10_000, fixtures.opts)
     end
 
@@ -169,7 +169,7 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       Redix.command(fixtures.conn, ["HDEL", fixtures.key, "0", marker])
       assert {:ok, 0, current_lease, _} = RedisLease.acquire(10_000, fixtures.opts)
 
-      assert {:error, :lost, :expired} =
+      assert {:error, :lost, :not_owner} =
                RedisLease.renew(stale_lease, 10_000, fixtures.opts)
 
       assert {:ok, ^current_lease, 10_000} =

@@ -110,7 +110,7 @@ if Code.ensure_loaded?(Redix) do
       exec(with_conn, set_hash_fields_cmd(key, id, token, lease_duration, :if_all_exist))
       |> case do
         {:ok, 1} -> {:ok, lease, lease_duration}
-        {:ok, 0} -> {:error, :lost, :expired}
+        {:ok, 0} -> {:error, :lost, :not_owner}
         {:error, reason} -> {:error, :retry, reason}
         _ -> {:error, :retry, "unknown"}
       end

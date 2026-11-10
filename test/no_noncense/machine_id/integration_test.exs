@@ -166,7 +166,7 @@ defmodule NoNoncense.MachineId.IntegrationTest do
       {_, _log} =
         with_log(fn ->
           renew(lm)
-          assert_receive {:lease_lost, :expired}, 200
+          assert_receive {:lease_lost, :not_owner}, 200
         end)
 
       assert_eventually(fn -> assert <<_::64>> = NoNoncense.nonce(db_name, 64) end)

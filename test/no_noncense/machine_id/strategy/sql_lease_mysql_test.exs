@@ -88,7 +88,7 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
     test "fails with :lost when the token doesn't match" do
       assert {:ok, id, {id, _token}, _ttl} = SqlLease.acquire(10_000, @opts)
 
-      assert {:error, :lost, :expired} =
+      assert {:error, :lost, :not_owner} =
                SqlLease.renew({id, "wrong-token"}, 10_000, @opts)
     end
 
@@ -109,7 +109,7 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
 
       assert {:ok, ^id, current_lease, _ttl} = SqlLease.acquire(10_000, @opts)
 
-      assert {:error, :lost, :expired} = SqlLease.renew(stale_lease, 10_000, @opts)
+      assert {:error, :lost, :not_owner} = SqlLease.renew(stale_lease, 10_000, @opts)
       assert {:ok, _renewed, _ttl} = SqlLease.renew(current_lease, 10_000, @opts)
     end
   end
@@ -122,7 +122,7 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
       released = MysqlRepo.get(NoNoncenseLease, id)
       assert released.token == nil
       assert DateTime.compare(released.expires_at, DateTime.utc_now()) != :gt
-      assert {:error, :lost, :expired} = SqlLease.renew(lease, 10_000, @opts)
+      assert {:error, :lost, :not_owner} = SqlLease.renew(lease, 10_000, @opts)
       assert {:ok, ^id, _new_lease, _ttl} = SqlLease.acquire(10_000, @opts)
     end
 
