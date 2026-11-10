@@ -120,6 +120,10 @@ defmodule NoNoncense.MachineId do
     Supervisor.start_link(__MODULE__, opts, name: name)
   end
 
+  @doc false
+  # Sets opts[:name] as the id.
+  def child_spec(opts), do: Supervisor.child_spec(super(opts), id: opts[:name] || __MODULE__)
+
   @impl true
   def init(opts) do
     name = opts[:name] || __MODULE__
