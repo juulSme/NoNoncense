@@ -6,12 +6,14 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   alias NoNoncense.Telemetry
   require Logger
 
+  @terminal_errors [:illegal_ttl, :illegal_machine_id]
+
   @doc """
   Acquires a machine ID during LeaseManager startup.
 
   - renew the stored lease if it is still locally valid (single attempt)
   - otherwise, or if renewal fails, acquire a new lease, retrying until the deadline
-  - an illegal TTL fails startup instead of retrying
+  - an illegal TTL or machine ID fails startup instead of retrying
 
   `:acquire_timeout` bounds all of it, including the strategy calls themselves.
   This runs synchronously, so the manager does not start until it has a valid lease.
@@ -24,8 +26,7 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
 
     case renew_stored(state, deadline) do
       {:ok, local_lease} -> {:ok, local_lease}
-      # The strategy grants TTLs we cannot use; retrying would get the same answer
-      {:error, :rejected, :illegal_ttl} -> {:error, :illegal_ttl}
+      {:error, :rejected, reason} when reason in @terminal_errors -> {:error, reason}
       _ -> acquire_new_until(state, deadline)
     end
   end
@@ -41,8 +42,9 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
     end
   end
 
-  defp attempt_renew(state, local_lease, deadline) do
-    case StrategyCall.renew(state, local_lease.strategy_lease, :store, deadline: deadline) do
+  defp attempt_renew(state, local_lease = %{strategy_lease: strat_lease}, deadline) do
+    StrategyCall.renew(state, strat_lease, :store, deadline: deadline, on_reject: :discard)
+    |> case do
       {:ok, renewed = %{machine_id: machine_id}} = ok ->
         Logger.info("Lease of ID #{machine_id} resumed from store, #{valid_for(renewed)}.")
         ok
@@ -58,7 +60,8 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
   # Acquires a fresh lease, looping until it succeeds, fails for good, or the deadline passes.
   defp acquire_new_until(state, deadline) do
     with {_, false} <- {:deadline_expired?, deadline_expired?(deadline)},
-         {:ok, lease} <- StrategyCall.acquire(state, :initial, deadline: deadline) do
+         {:ok, lease} <-
+           StrategyCall.acquire(state, :initial, deadline: deadline, on_reject: :discard) do
       Logger.info("Lease of ID #{lease.machine_id} acquired, #{valid_for(lease)}.")
       {:ok, lease}
     else
@@ -66,8 +69,8 @@ defmodule NoNoncense.MachineId.LeaseManager.Bootstrap do
         Logger.critical("Acquisition failed, deadline exceeded.")
         {:error, :timeout}
 
-      {:error, :rejected, :illegal_ttl} ->
-        {:error, :illegal_ttl}
+      {:error, :rejected, reason} when reason in @terminal_errors ->
+        {:error, reason}
 
       # The strategy answered but the call used up the validity window. StrategyCall has already
       # released that lease, so try again straight away; the deadline bounds the loop.

@@ -26,17 +26,13 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
   alias NoNoncense.MachineId.LeaseStore
   alias NoNoncense.Telemetry
 
-  # Sources that run before the manager has a lease; failures there are handled by Bootstrap
-  @startup_sources [:initial, :store]
-
-  @type result ::
-          {:ok, LeaseStore.local_lease()}
-          | {:error, :retry | :lost | :rejected, term()}
+  @type result :: {:ok, LeaseStore.local_lease()} | {:error, :retry | :lost | :rejected, term()}
 
   @doc """
   Acquires a lease and records it in the store.
-  LeaseStore.local_lease
+
   A lease the strategy granted but the store refused is released and reported as `:rejected`.
+  Pass `on_reject: :discard` during startup for silent, deadline-bounded cleanup.
   """
   @spec acquire(map(), atom(), keyword()) :: result()
   def acquire(state, source, opts \\ []) do
@@ -46,7 +42,7 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
       {{:ok, machine_id, lease, ttl_ms}, started_at} ->
         state.lease_store
         |> LeaseStore.put(machine_id, lease, ttl_ms, started_at)
-        |> accept(state, lease, source, opts[:deadline])
+        |> on_store(state, lease, opts)
 
       {{:error, reason}, _started_at} ->
         {:error, :retry, reason}
@@ -57,6 +53,7 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
   Renews a lease and records it in the store.
 
   A lease the strategy granted but the store refused is released and reported as `:rejected`.
+  Pass `on_reject: :discard` during startup for silent, deadline-bounded cleanup.
   """
   @spec renew(map(), term(), atom(), keyword()) :: result()
   def renew(state, lease, source, opts \\ []) do
@@ -66,7 +63,7 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
       {{:ok, renewed_lease, ttl_ms}, started_at} ->
         state.lease_store
         |> LeaseStore.renew(renewed_lease, ttl_ms, started_at)
-        |> accept(state, renewed_lease, source, opts[:deadline])
+        |> on_store(state, renewed_lease, opts)
 
       {{:error, _kind, _reason} = error, _started_at} ->
         error
@@ -86,28 +83,23 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
 
   # Passes through what the store accepted. A refusal means the strategy is still holding a lease
   # we cannot use, so release it and report why.
-  defp accept({:ok, local_lease}, _state, _lease, _source, _deadline), do: {:ok, local_lease}
+  defp on_store({:ok, local_lease}, _state, _lease, _opts), do: {:ok, local_lease}
 
-  defp accept({:error, reason}, state, lease, source, deadline) do
-    reject(state, lease, reason, source, deadline)
-    {:error, :rejected, reason}
-  end
+  defp on_store({:error, reason}, state, lease, opts) do
+    case opts[:on_reject] || :lose do
+      :lose ->
+        LeaseStore.lose(state.lease_store, reason)
+        release_async(state, lease)
 
-  # Bootstrap retries right away and wants the ID free, so wait for the release, but only as long
-  # as the deadline allows. If it did not complete, finish it in the background; release is
-  # idempotent, so repeating a call that may have taken effect is safe.
-  defp reject(state, lease, _reason, source, deadline) when source in @startup_sources do
-    :ok = LeaseStore.discard(state.lease_store)
+      :discard ->
+        :ok = LeaseStore.discard(state.lease_store)
 
-    with {:error, _reason} <- release_within(state, lease, :loss, deadline) do
-      release_async(state, lease)
+        with {:error, _reason} <- release_within(state, lease, :loss, opts[:deadline]) do
+          release_async(state, lease)
+        end
     end
-  end
 
-  # Factories must be disabled before the ID is released for others to take
-  defp reject(state, lease, reason, _source, _deadline) do
-    :ok = LeaseStore.lose(state.lease_store, reason)
-    release_async(state, lease)
+    {:error, :rejected, reason}
   end
 
   # One release attempt that gives up at `deadline`. Returns `:ok` or `{:error, reason}`, where a

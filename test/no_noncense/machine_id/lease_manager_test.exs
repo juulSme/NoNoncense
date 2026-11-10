@@ -638,45 +638,67 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       assert LeaseStore.machine_id(store) == 4
     end
 
-    test "treats a granted TTL below the minimum as an immediate loss" do
-      {:ok, agent} = FakeStrategy.start_agent([{:ok, 3, :lease1, 29_999}], [])
-      test_pid = self()
-      name = unique_name("lm")
-      dependencies = start_dependencies!(name, [])
+    for {machine_id, ttl_ms, reason} <- [
+          {3, 29_999, :illegal_ttl},
+          {512, 30_000, :illegal_machine_id},
+          {1.0, 30_000, :illegal_machine_id}
+        ] do
+      test "fails startup and releases a grant with ID #{inspect(machine_id)} and TTL #{ttl_ms}" do
+        {:ok, agent} =
+          FakeStrategy.start_agent([{:ok, unquote(machine_id), :lease1, unquote(ttl_ms)}], [])
 
-      {result, _log} =
-        start_failing_manager(
-          [
-            name: name,
-            strategy: FakeStrategy,
-            strategy_opts: [agent: agent, notify: test_pid],
-            on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
-          ],
-          dependencies
-        )
+        test_pid = self()
+        name = unique_name("lm")
+        dependencies = start_dependencies!(name, [])
 
-      assert {:error, :lease_acquisition_failed} = result
-      assert_receive {:lease_lost, :illegal_ttl}
-      assert_receive {:release, :lease1}
+        {result, _log} =
+          start_failing_manager(
+            [
+              name: name,
+              strategy: FakeStrategy,
+              strategy_opts: [agent: agent, notify: test_pid],
+              on_lease_lost: fn reason -> send(test_pid, {:lease_lost, reason}) end
+            ],
+            dependencies
+          )
+
+        assert {:error, :lease_acquisition_failed} = result
+        assert_receive {:lease_lost, unquote(reason)}
+        assert_receive {:release, :lease1}
+      end
     end
 
-    test "releases a rejected renewed token during startup" do
-      store = unique_name("store")
-      name = unique_name("lm")
-      start_supervised!({LeaseStore, name: store})
-      LeaseStore.put(store, 12, :stored, 100_000, System.monotonic_time(:millisecond))
-      dependencies = start_dependencies!(name, lease_store: store)
-      {:ok, agent} = FakeStrategy.start_agent([], [{:ok, :rotated, 29_999}])
+    for previous_lease <- [:stored, nil], renewed_lease <- [:stored, :rotated, nil] do
+      test "releases rejected startup tokens from #{inspect(previous_lease)} to #{inspect(renewed_lease)}" do
+        store = unique_name("store")
+        name = unique_name("lm")
+        start_supervised!({LeaseStore, name: store})
 
-      {result, _log} =
-        start_failing_manager(
-          [name: name, strategy: FakeStrategy, strategy_opts: [agent: agent, notify: self()]],
-          dependencies
+        LeaseStore.put(
+          store,
+          12,
+          unquote(previous_lease),
+          100_000,
+          System.monotonic_time(:millisecond)
         )
 
-      assert {:error, :lease_acquisition_failed} = result
-      assert_receive {:release, :rotated}
-      assert LeaseStore.get(store) == nil
+        dependencies = start_dependencies!(name, lease_store: store)
+        {:ok, agent} = FakeStrategy.start_agent([], [{:ok, unquote(renewed_lease), 29_999}])
+
+        {result, _log} =
+          start_failing_manager(
+            [name: name, strategy: FakeStrategy, strategy_opts: [agent: agent, notify: self()]],
+            dependencies
+          )
+
+        assert {:error, :lease_acquisition_failed} = result
+
+        for lease <- Enum.uniq([unquote(previous_lease), unquote(renewed_lease)]) do
+          assert_receive {:release, ^lease}
+        end
+
+        assert LeaseStore.get(store) == nil
+      end
     end
 
     test "disables cached factories before releasing a rejected startup renewal" do
@@ -1082,27 +1104,34 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
       refute_received {:lease_lost, _}
     end
 
-    test "releases a rejected renewed token after disabling factories" do
-      instance = unique_name("nonce")
+    for previous_lease <- [:original, nil], renewed_lease <- [:original, :rotated, nil] do
+      test "releases rejected runtime tokens from #{inspect(previous_lease)} to #{inspect(renewed_lease)}" do
+        instance = unique_name("nonce")
 
-      {:ok, agent} =
-        FakeStrategy.start_agent([{:ok, 3, :original, 100_000}], [{:ok, :rotated, 29_999}])
+        {:ok, agent} =
+          FakeStrategy.start_agent([{:ok, 3, unquote(previous_lease), 100_000}], [
+            {:ok, unquote(renewed_lease), 29_999}
+          ])
 
-      name =
-        start_lease_manager!(
-          strategy: __MODULE__.DeterministicFakeStrategy,
-          strategy_opts: [agent: agent, notify: self()],
-          instances: [[name: instance]]
-        )
+        name =
+          start_lease_manager!(
+            strategy: __MODULE__.DeterministicFakeStrategy,
+            strategy_opts: [agent: agent, notify: self()],
+            instances: [[name: instance]]
+          )
 
-      capture_log(fn ->
-        renew(name)
-        assert_receive {:lease_lost, :illegal_ttl}
-        assert_receive {:release, :rotated}
-      end)
+        capture_log(fn ->
+          renew(name)
+          assert_receive {:lease_lost, :illegal_ttl}
 
-      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
-      assert LeaseStore.machine_id(store_name(name)) == nil
+          for lease <- Enum.uniq([unquote(previous_lease), unquote(renewed_lease)]) do
+            assert_receive {:release, ^lease}
+          end
+        end)
+
+        assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
+        assert LeaseStore.machine_id(store_name(name)) == nil
+      end
     end
 
     test "releases a rejected reacquisition before retrying" do
