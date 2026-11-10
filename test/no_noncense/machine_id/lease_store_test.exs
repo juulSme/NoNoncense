@@ -61,6 +61,35 @@ defmodule NoNoncense.MachineId.LeaseStoreTest do
     assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(instance, 64) end
   end
 
+  test "validates machine IDs without configured factories" do
+    %{name: name, pid: pid} = start_store!()
+
+    for machine_id <- [-1, 512, 1.0, nil, "7", :invalid] do
+      assert {:error, :illegal_machine_id} = put(name, machine_id, :token, 30_000)
+      assert LeaseStore.get(name) == nil
+    end
+
+    for machine_id <- [0, 511] do
+      assert {:ok, %{machine_id: ^machine_id}} = put(name, machine_id, :token, 30_000)
+    end
+
+    assert Process.alive?(pid)
+  end
+
+  test "rejects invalid IDs before initializing factories and preserves an existing lease" do
+    instance = unique_name("nonce")
+    %{name: name, pid: pid} = start_store!(instances: [[name: instance]])
+
+    assert {:error, :illegal_machine_id} = put(name, 512, :invalid, 30_000)
+    assert :persistent_term.get(instance, nil) == nil
+
+    assert {:ok, lease} = put(name, 7, :valid, 30_000)
+    assert {:error, :illegal_machine_id} = put(name, -1, :invalid, 30_000)
+    assert LeaseStore.get(name) == lease
+    assert <<_::64>> = NoNoncense.nonce(instance, 64)
+    assert Process.alive?(pid)
+  end
+
   test "rejects TTLs below the minimum" do
     %{name: name} = start_store!()
 

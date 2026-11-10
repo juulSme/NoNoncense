@@ -58,7 +58,8 @@ defmodule NoNoncense.MachineId do
   so it keeps working even when a strategy callback blocks or the manager restarts.
 
   Startup blocks until a lease is acquired or `:acquire_timeout` is reached. Acquisition failures
-  are retried with backoff; a strategy granting a TTL below 30 seconds fails startup immediately.
+  are retried with backoff; a strategy granting an invalid machine ID or a TTL below 30 seconds
+  fails startup immediately.
   Factories are enabled only after a lease is accepted.
 
   The strategy may grant a TTL different from the requested `:lease_duration`. Local expiry is

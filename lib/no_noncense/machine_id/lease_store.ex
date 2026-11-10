@@ -44,7 +44,7 @@ defmodule NoNoncense.MachineId.LeaseStore do
   The local lease is a wrapper around a strategy's returned lease, with the machine ID and expiration timestamp added.
   """
   @type local_lease :: %{machine_id: 0..511, strategy_lease: term(), expires_at_mono: integer()}
-  @type error :: :expired | :lost | :illegal_ttl
+  @type error :: :expired | :lost | :illegal_ttl | :illegal_machine_id
 
   ##########
   # Client #
@@ -69,7 +69,7 @@ defmodule NoNoncense.MachineId.LeaseStore do
 
   @doc "Stores a newly acquired lease, using its operation start time in monotonic milliseconds."
   @spec put(GenServer.name(), 0..511, term(), integer(), integer()) ::
-          {:ok, local_lease()} | {:error, :expired | :illegal_ttl}
+          {:ok, local_lease()} | {:error, :expired | :illegal_ttl | :illegal_machine_id}
   def put(name, machine_id, strategy_lease, ttl_ms, started_at) do
     GenServer.call(name, {:put, machine_id, strategy_lease, ttl_ms, started_at})
   end
@@ -130,7 +130,8 @@ defmodule NoNoncense.MachineId.LeaseStore do
   end
 
   def handle_call({:put, machine_id, strategy_lease, ttl_ms, started_at}, _from, state) do
-    with {:ok, new_local} <- build_local_lease(machine_id, strategy_lease, ttl_ms, started_at),
+    with :ok <- verify_lease(machine_id, ttl_ms),
+         {:ok, new_local} <- build_local_lease(machine_id, strategy_lease, ttl_ms, started_at),
          # enable factories before arming the timer
          Enum.each(state.instances, &Instances.re_init(Keyword.put(&1, :machine_id, machine_id))),
          # verify that initialization did not take too long
@@ -150,8 +151,9 @@ defmodule NoNoncense.MachineId.LeaseStore do
   # A rejected renewal leaves the old lease in place until the caller clears it or its timer fires.
   def handle_call({:renew, strategy_lease, ttl_ms, started_at}, _from, state) do
     with true <- valid?(state.local_lease),
-         {:ok, new_local} <-
-           build_local_lease(state.local_lease.machine_id, strategy_lease, ttl_ms, started_at) do
+         machine_id = state.local_lease.machine_id,
+         :ok <- verify_lease(machine_id, ttl_ms),
+         {:ok, new_local} <- build_local_lease(machine_id, strategy_lease, ttl_ms, started_at) do
       {:reply, {:ok, new_local}, arm(state, new_local)}
     else
       # Expired but the timer message hasn't been handled yet; handle it here and now
@@ -181,17 +183,19 @@ defmodule NoNoncense.MachineId.LeaseStore do
   # Private #
   ###########
 
+  defp verify_lease(machine_id, ttl_ms)
+  defp verify_lease(id, _) when id not in 0..@machine_id_limit, do: {:error, :illegal_machine_id}
+  defp verify_lease(_, ttl_ms) when not is_integer(ttl_ms), do: {:error, :illegal_ttl}
+  defp verify_lease(_, ttl_ms) when ttl_ms < @min_lease_ttl, do: {:error, :illegal_ttl}
+  defp verify_lease(_, _), do: :ok
+
   # Expiry counts from when the strategy call started, not when it returned, so slow calls can't
   # stretch the lease. A call slow enough to use up the whole window is rejected as expired.
-  defp build_local_lease(machine_id, strategy_lease, ttl_ms, started_at)
-       when is_integer(ttl_ms) and ttl_ms >= @min_lease_ttl do
+  defp build_local_lease(machine_id, strategy_lease, ttl_ms, started_at) do
     exp = started_at + ttl_ms - @lease_safety_margin
     new_local = %{machine_id: machine_id, strategy_lease: strategy_lease, expires_at_mono: exp}
     if valid?(new_local), do: {:ok, new_local}, else: {:error, :expired}
   end
-
-  # Rejects TTLs below the minimum
-  defp build_local_lease(_, _, _, _), do: {:error, :illegal_ttl}
 
   # Makes `lease` current and restarts the expiry timer for it.
   defp arm(state, local_lease) do
