@@ -81,7 +81,11 @@ if Code.ensure_loaded?(Ecto.Migration) do
     def acquire(lease_duration, opts) do
       {repo, table} = process_opts(opts)
 
-      from(l in {table, NoNoncenseLease}, where: l.expires_at < db_now(), order_by: l.id)
+      from(l in {table, NoNoncenseLease},
+        where: l.expires_at < db_now(),
+        order_by: l.id,
+        select: [:id, :lock_version]
+      )
       |> repo.all()
       |> NoNoncense.MachineId.Strategy.Shared.shuffle_after_3()
       |> case do
