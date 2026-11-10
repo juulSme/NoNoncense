@@ -132,7 +132,9 @@ if Code.ensure_loaded?(Ecto.Migration) do
 
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.token == ^token,
-        update: [set: [token: nil, expires_at: db_now()], inc: [lock_version: 1]]
+        # we quarantine the ID for 1 second
+        # this prevents another node with a skewed clock from generating the same IDs
+        update: [set: [token: nil, expires_at: db_now_add(1_000)], inc: [lock_version: 1]]
       )
       |> repo.update_all([])
 

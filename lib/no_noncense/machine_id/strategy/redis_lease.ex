@@ -119,8 +119,9 @@ if Code.ensure_loaded?(Redix) do
     @impl true
     def release(_lease = {id, token}, opts) do
       {with_conn, key} = process_opts(opts)
-      # ttl 0 effectively deletes, this is documented behavior on both Redis and Valkey
-      exec(with_conn, set_hash_fields_cmd(key, id, token, 0, :if_all_exist))
+      # we quarantine the ID for 1 second
+      # this prevents another node with a skewed clock from generating the same IDs
+      exec(with_conn, set_hash_fields_cmd(key, id, token, 1_000, :if_all_exist))
       :ok
     end
 

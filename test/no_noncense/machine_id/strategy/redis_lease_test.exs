@@ -178,13 +178,51 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
   end
 
   describe "release/2" do
-    test "deletes both fields when the lease is still held", fixtures do
-      assert {:ok, 0, lease, _} = RedisLease.acquire(10_000, fixtures.opts)
+    test "quarantines both fields for one second and skips the released ID", fixtures do
+      assert {:ok, 0, lease = {0, token}, _} = RedisLease.acquire(10_000, fixtures.opts)
       assert :ok = RedisLease.release(lease, fixtures.opts)
-      assert {:ok, []} = Redix.command(fixtures.conn, ["HGETALL", fixtures.key])
+
+      assert {:ok, [id_ttl, marker_ttl]} =
+               Redix.command(fixtures.conn, [
+                 "HPTTL",
+                 fixtures.key,
+                 "FIELDS",
+                 "2",
+                 "0",
+                 "token.0.#{token}"
+               ])
+
+      assert id_ttl > 0 and id_ttl <= 1_000
+      assert marker_ttl == id_ttl
+      assert {:ok, 1, _lease, _ttl} = RedisLease.acquire(10_000, fixtures.opts)
     end
 
-    test "does not delete another node's lease for the same ID", fixtures do
+    test "allows reuse after quarantine expires with a new token", fixtures do
+      assert {:ok, 0, lease = {0, token}, _} = RedisLease.acquire(10_000, fixtures.opts)
+      assert :ok = RedisLease.release(lease, fixtures.opts)
+
+      assert {:ok, [2, 2]} =
+               Redix.command(fixtures.conn, [
+                 "HPEXPIREAT",
+                 fixtures.key,
+                 "1",
+                 "FIELDS",
+                 "2",
+                 "0",
+                 "token.0.#{token}"
+               ])
+
+      assert {:ok, 0, current_lease = {0, current_token}, _} =
+               RedisLease.acquire(10_000, fixtures.opts)
+
+      refute current_token == token
+      assert :ok = RedisLease.release(lease, fixtures.opts)
+
+      assert {:ok, ^current_lease, 10_000} =
+               RedisLease.renew(current_lease, 10_000, fixtures.opts)
+    end
+
+    test "does not shorten another node's lease for the same ID", fixtures do
       assert {:ok, 0, stale_lease, _} = RedisLease.acquire(10_000, fixtures.opts)
       assert {:ok, marker} = marker_field(fixtures.conn, fixtures.key, 0)
       Redix.command(fixtures.conn, ["HDEL", fixtures.key, "0", marker])
@@ -194,6 +232,11 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
 
       assert {:ok, ^current_token} =
                Redix.command(fixtures.conn, ["HGET", fixtures.key, "0"])
+
+      assert {:ok, [ttl]} =
+               Redix.command(fixtures.conn, ["HPTTL", fixtures.key, "FIELDS", "1", "0"])
+
+      assert ttl > 1_000
     end
   end
 

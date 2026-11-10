@@ -115,23 +115,42 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
   end
 
   describe "release/2" do
-    test "immediately expires the lease so it becomes available again" do
+    test "quarantines the released ID for one second and prevents renewal" do
       assert {:ok, id, lease, _ttl} = SqlLease.acquire(10_000, @opts)
       assert :ok = SqlLease.release(lease, @opts)
 
       released = PgRepo.get(NoNoncenseLease, id)
       assert released.token == nil
-      assert DateTime.compare(released.expires_at, DateTime.utc_now()) != :gt
+      assert released.lock_version == 2
       assert {:error, :lost, :not_owner} = SqlLease.renew(lease, 10_000, @opts)
 
-      # can't reuse SqlLease.acquire/2 here: within this test's sandbox transaction,
-      # Postgres' CURRENT_TIMESTAMP is pinned to transaction start, so it never advances
-      # past the expires_at that release/2 itself just wrote via the same db_now()
-      future = DateTime.add(DateTime.utc_now(), 1, :second)
-
       assert PgRepo.exists?(
-               from(l in NoNoncenseLease, where: l.id == ^id and l.expires_at < ^future)
+               from(l in NoNoncenseLease,
+                 where:
+                   l.id == ^id and
+                     l.expires_at == datetime_add(fragment("CURRENT_TIMESTAMP(6)"), 1, "second")
+               )
              )
+
+      assert {:ok, next_id, _lease, _ttl} = SqlLease.acquire(10_000, @opts)
+      assert next_id == id + 1
+    end
+
+    test "allows reuse after quarantine expires with a new token" do
+      assert {:ok, id, lease = {id, token}, _ttl} = SqlLease.acquire(10_000, @opts)
+      assert :ok = SqlLease.release(lease, @opts)
+
+      from(l in NoNoncenseLease, where: l.id == ^id)
+      |> PgRepo.update_all(set: [expires_at: ~U[1970-01-01 00:00:00.000000Z]])
+
+      assert {:ok, ^id, current_lease = {^id, current_token}, _ttl} =
+               SqlLease.acquire(10_000, @opts)
+
+      refute current_token == token
+      before = PgRepo.get(NoNoncenseLease, id)
+      assert :ok = SqlLease.release(lease, @opts)
+      assert PgRepo.get(NoNoncenseLease, id) == before
+      assert {:ok, ^current_lease, 10_000} = SqlLease.renew(current_lease, 10_000, @opts)
     end
 
     test "does not disturb another node's lease acquired for the same id" do

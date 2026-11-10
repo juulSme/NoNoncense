@@ -174,17 +174,38 @@ defmodule NoNoncense.MachineId.IntegrationTest do
   end
 
   describe "lease release against a real backend" do
-    test "stopping the supervisor releases the id back to Redis", fixtures do
+    test "stopping the supervisor disables its factory and quarantines the ID", fixtures do
       db_name = unique_name("db")
 
       %{name: sup_name, lease_store: store} =
         start_machine_id!([instances: [[name: db_name]]], fixtures.conn, fixtures.key)
 
-      id = LeaseStore.machine_id(store)
+      %{machine_id: id, strategy_lease: {id, token}} = LeaseStore.get(store)
 
       stop_supervised!(sup_name)
 
-      assert {:ok, nil} = Redix.command(fixtures.conn, ["HGET", fixtures.key, "#{id}"])
+      assert_raise NoNoncense.Errors.DisabledError, fn -> NoNoncense.nonce(db_name, 64) end
+
+      assert {:ok, [id_ttl, marker_ttl]} =
+               Redix.command(fixtures.conn, [
+                 "HPTTL",
+                 fixtures.key,
+                 "FIELDS",
+                 "2",
+                 "#{id}",
+                 "token.#{id}.#{token}"
+               ])
+
+      assert id_ttl > 0 and id_ttl <= 1_000
+      assert marker_ttl == id_ttl
+
+      replacement_name = unique_name("db")
+
+      %{lease_store: replacement_store} =
+        start_machine_id!([instances: [[name: replacement_name]]], fixtures.conn, fixtures.key)
+
+      refute LeaseStore.machine_id(replacement_store) == id
+      assert <<_::64>> = NoNoncense.nonce(replacement_name, 64)
     end
   end
 end
