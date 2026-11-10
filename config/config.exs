@@ -12,7 +12,7 @@ config :no_noncense, MyApp.MysqlRepo,
   username: "root",
   password: "supersecret",
   database: "no_noncense",
-  pool: Ecto.Adapters.SQL.Sandbox,
+  pool: DBConnection.ConnectionPool,
   priv: "priv/repo"
 
 config :no_noncense, MyApp.PgRepo,
@@ -21,7 +21,7 @@ config :no_noncense, MyApp.PgRepo,
   username: "postgres",
   password: "supersecret",
   database: "no_noncense",
-  pool: Ecto.Adapters.SQL.Sandbox,
+  pool: DBConnection.ConnectionPool,
   priv: "priv/repo"
 
 import_config("#{Mix.env()}.exs")
