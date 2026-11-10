@@ -168,4 +168,9 @@ defmodule NoNoncense.MachineId do
     |> Enum.reject(&is_nil/1)
     |> Supervisor.init(strategy: :rest_for_one)
   end
+
+  @doc false
+  def renew_now(name \\ __MODULE__) do
+    Module.concat(name, :LeaseManager) |> GenServer.cast(:renew)
+  end
 end

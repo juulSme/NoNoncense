@@ -137,6 +137,10 @@ defmodule NoNoncense.MachineId.LeaseManager do
     end
   end
 
+  @impl true
+  def handle_cast(:renew, %{timer: {:acquire, _ref}} = state), do: {:noreply, state}
+  def handle_cast(:renew, state), do: {:noreply, state |> cancel_timer() |> renew()}
+
   # The store's notification that the lease is gone.
   @impl true
   def handle_info({:lease_lost, lease, reason}, state) do
