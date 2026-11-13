@@ -182,6 +182,7 @@ defmodule NoNoncense do
     * `:cipher64` - The cipher for 64-bit nonces (`:blowfish`, `:speck`, or `:des3`). Defaults to `:blowfish`.
     * `:cipher96` - The cipher for 96-bit nonces (`:blowfish`, `:speck`, or `:des3`). Defaults to `:blowfish`.
     * `:cipher128` - The cipher for 128-bit nonces (`:aes` or `:speck`). Defaults to `:aes`.
+    * `:time_offset` - Internal. Used by NoNoncense.MachineId to synchronize lease validity.
 
   The encryption-related options only affect `encrypted_nonce/2` nonces.
   """
@@ -198,6 +199,7 @@ defmodule NoNoncense do
           | {:cipher64, :blowfish | :des3 | :speck}
           | {:cipher96, :blowfish | :des3 | :speck}
           | {:cipher128, :aes | :speck}
+          | {:time_offset, integer()}
 
   @doc """
   Initialize a nonce factory. Multiple instances with different names, epochs and even machine IDs are supported.
@@ -228,7 +230,8 @@ defmodule NoNoncense do
     end
 
     # the offset of the monotonic clock from the wall clock epoch
-    mono_epoch_offset = :erlang.time_offset(:millisecond) - epoch
+    time_offset = opts[:time_offset] || :erlang.time_offset(:millisecond)
+    mono_epoch_offset = time_offset - epoch
     init_at = epoch_time(mono_epoch_offset)
 
     # verify timestamp does not overflow

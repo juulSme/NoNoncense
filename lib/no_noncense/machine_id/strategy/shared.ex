@@ -27,4 +27,8 @@ defmodule NoNoncense.MachineId.Strategy.Shared do
   def shuffle_after_3(list)
   def shuffle_after_3([a, b, c | tail]), do: [a, b, c | Enum.shuffle(tail)]
   def shuffle_after_3(short_list), do: short_list
+
+  def now(opts), do: now_unix(opts) |> DateTime.from_unix!(:millisecond)
+  def now_unix(opts), do: :erlang.monotonic_time(:millisecond) + time_offset(opts)
+  def time_offset(opts), do: Keyword.fetch!(opts, :time_offset)
 end

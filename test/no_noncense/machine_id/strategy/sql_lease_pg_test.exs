@@ -4,15 +4,57 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
   import ExUnit.CaptureLog
   @moduletag :integration
 
-  alias NoNoncense.MachineId.Strategy.SqlLease
+  alias NoNoncense.MachineId.Strategy.{Shared, SqlLease}
   alias SqlLease.NoNoncenseLease
 
-  @opts [repo: PgRepo]
+  @opts [repo: PgRepo, time_offset: System.time_offset(:millisecond)]
 
   describe "acquire/2" do
     test "acquires the lowest available id" do
       assert {:ok, 0, {0, token}, 10_000} = SqlLease.acquire(10_000, @opts)
       assert is_binary(token)
+    end
+
+    test "skips a database-expired lease until the local clock passes its expiry" do
+      from(l in NoNoncenseLease,
+        where: l.id == 0,
+        update: [set: [expires_at: datetime_add(fragment("CURRENT_TIMESTAMP(6)"), -30, "second")]]
+      )
+      |> PgRepo.update_all([])
+
+      opts = Keyword.put(@opts, :time_offset, :erlang.time_offset(:millisecond) - 60_000)
+      assert {:ok, 1, _, 30_000} = SqlLease.acquire(30_000, opts)
+      assert {:ok, 0, _, 30_000} = SqlLease.acquire(30_000, @opts)
+    end
+
+    test "skips a locally expired lease until the database clock passes its expiry" do
+      from(l in NoNoncenseLease,
+        where: l.id == 0,
+        update: [set: [expires_at: datetime_add(fragment("CURRENT_TIMESTAMP(6)"), 30, "second")]]
+      )
+      |> PgRepo.update_all([])
+
+      opts = Keyword.put(@opts, :time_offset, :erlang.time_offset(:millisecond) + 60_000)
+      assert {:ok, 1, _, 30_000} = SqlLease.acquire(30_000, opts)
+    end
+
+    for {direction, skew} <- [ahead: 60_000, behind: -60_000] do
+      @tag clock_skew: skew
+      test "uses the later clock for acquisition expiry when local time is #{direction}", %{
+        clock_skew: skew
+      } do
+        opts = Keyword.put(@opts, :time_offset, :erlang.time_offset(:millisecond) + skew)
+        before_clocks = clock_times(opts)
+        assert {:ok, id, _, 30_000} = SqlLease.acquire(30_000, opts)
+        after_clocks = clock_times(opts)
+
+        assert_expiry_between(
+          PgRepo.get(NoNoncenseLease, id).expires_at,
+          before_clocks,
+          after_clocks,
+          30_000
+        )
+      end
     end
 
     test "skips ids that are still leased" do
@@ -65,6 +107,25 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
   end
 
   describe "renew/3" do
+    for {direction, skew} <- [ahead: 60_000, behind: -60_000] do
+      @tag clock_skew: skew
+      test "renews from the later clock and allows TTL shortening when local time is #{direction}",
+           %{clock_skew: skew} do
+        assert {:ok, id, lease, 120_000} = SqlLease.acquire(120_000, @opts)
+        previous_expiry = PgRepo.get(NoNoncenseLease, id).expires_at
+        opts = Keyword.put(@opts, :time_offset, :erlang.time_offset(:millisecond) + skew)
+        before_clocks = clock_times(opts)
+
+        assert {:ok, ^lease, 30_000} = SqlLease.renew(lease, 30_000, opts)
+        after_clocks = clock_times(opts)
+        renewed = PgRepo.get(NoNoncenseLease, id)
+
+        assert_expiry_between(renewed.expires_at, before_clocks, after_clocks, 30_000)
+        assert DateTime.compare(renewed.expires_at, previous_expiry) == :lt
+        assert renewed.lock_version == 2
+      end
+    end
+
     test "extends expires_at and increments lock_version" do
       assert {:ok, id, lease, _ttl} = SqlLease.acquire(10_000, @opts)
       expires_before = PgRepo.get(NoNoncenseLease, id).expires_at
@@ -115,25 +176,102 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
   end
 
   describe "release/2" do
-    test "quarantines the released ID for one second and prevents renewal" do
-      assert {:ok, id, lease, _ttl} = SqlLease.acquire(10_000, @opts)
-      assert :ok = SqlLease.release(lease, @opts)
+    for {direction, skew} <- [ahead: 60_000, behind: -60_000] do
+      @tag clock_skew: skew
+      test "uses the later clock for release quarantine when local time is #{direction}", %{
+        clock_skew: skew
+      } do
+        assert {:ok, id, lease, 120_000} = SqlLease.acquire(120_000, @opts)
+        previous_expiry = PgRepo.get(NoNoncenseLease, id).expires_at
+        opts = Keyword.put(@opts, :time_offset, :erlang.time_offset(:millisecond) + skew)
+        before_clocks = clock_times(opts)
 
+        assert :ok = SqlLease.release(lease, opts)
+        after_clocks = clock_times(opts)
+        released = PgRepo.get(NoNoncenseLease, id)
+
+        assert_expiry_between(released.expires_at, before_clocks, after_clocks, 1_000)
+        assert DateTime.compare(released.expires_at, previous_expiry) == :lt
+        assert released.token == nil
+        assert released.lock_version == 2
+        assert {:error, :lost, :not_owner} = SqlLease.renew(lease, 30_000, opts)
+        assert :ok = SqlLease.release(lease, opts)
+        assert PgRepo.get(NoNoncenseLease, id) == released
+      end
+    end
+
+    test "preserves both clock guards during a skewed-clock handoff" do
+      offset = :erlang.time_offset(:millisecond)
+      owner_opts = Keyword.put(@opts, :time_offset, offset + 60_000)
+      assert {:ok, id, lease = {id, token}, 30_000} = SqlLease.acquire(30_000, owner_opts)
+      assert :ok = SqlLease.release(lease, owner_opts)
       released = PgRepo.get(NoNoncenseLease, id)
       assert released.token == nil
+
+      fast_opts = Keyword.put(@opts, :time_offset, offset + 120_000)
+      assert DateTime.compare(Shared.now(fast_opts), released.expires_at) == :gt
+      assert {:ok, 1, _, 30_000} = SqlLease.acquire(30_000, fast_opts)
+      assert PgRepo.get(NoNoncenseLease, id) == released
+
+      # Backdate the cutoff and successor clocks equally to simulate elapsed time without waiting.
+      elapsed = 120_000
+      cutoff = DateTime.add(released.expires_at, -elapsed, :millisecond)
+
+      from(l in NoNoncenseLease, where: l.id == ^id)
+      |> PgRepo.update_all(set: [expires_at: cutoff])
+
+      slower_opts = Keyword.put(@opts, :time_offset, offset - elapsed)
+      assert DateTime.compare(Shared.now(slower_opts), cutoff) == :lt
+      assert {:ok, 2, _, 30_000} = SqlLease.acquire(30_000, slower_opts)
+      assert PgRepo.get(NoNoncenseLease, id).expires_at == cutoff
+
+      successor_opts = Keyword.put(@opts, :time_offset, offset + 120_000 - elapsed)
+
+      assert {:ok, ^id, successor_lease = {^id, successor_token}, 30_000} =
+               SqlLease.acquire(30_000, successor_opts)
+
+      refute successor_token == token
+      successor = PgRepo.get(NoNoncenseLease, id)
+      assert :ok = SqlLease.release(lease, owner_opts)
+      assert {:error, :lost, :not_owner} = SqlLease.renew(lease, 30_000, owner_opts)
+      assert PgRepo.get(NoNoncenseLease, id) == successor
+
+      assert {:ok, ^successor_lease, 30_000} =
+               SqlLease.renew(successor_lease, 30_000, successor_opts)
+    end
+
+    test "quarantines the lease for one second according to both clocks and prevents renewal" do
+      assert {:ok, id, lease, _ttl} = SqlLease.acquire(10_000, @opts)
+      opts = Keyword.put(@opts, :time_offset, :erlang.time_offset(:millisecond))
+      local_before = Shared.now(opts)
+
+      db_before =
+        PgRepo.one(
+          from(l in NoNoncenseLease,
+            where: l.id == ^id,
+            select: type(fragment("CURRENT_TIMESTAMP(6)"), :utc_datetime_usec)
+          )
+        )
+
+      assert :ok = SqlLease.release(lease, opts)
+
+      {released, db_after} =
+        PgRepo.one(
+          from(l in NoNoncenseLease,
+            where: l.id == ^id,
+            select: {l, type(fragment("CURRENT_TIMESTAMP(6)"), :utc_datetime_usec)}
+          )
+        )
+
+      local_after = Shared.now(opts)
+      earliest_expiry = Enum.max([local_before, db_before], DateTime) |> DateTime.add(1, :second)
+      latest_expiry = Enum.max([local_after, db_after], DateTime) |> DateTime.add(1, :second)
+
+      assert released.token == nil
       assert released.lock_version == 2
+      assert DateTime.compare(released.expires_at, earliest_expiry) != :lt
+      assert DateTime.compare(released.expires_at, latest_expiry) != :gt
       assert {:error, :lost, :not_owner} = SqlLease.renew(lease, 10_000, @opts)
-
-      assert PgRepo.exists?(
-               from(l in NoNoncenseLease,
-                 where:
-                   l.id == ^id and
-                     l.expires_at == datetime_add(fragment("CURRENT_TIMESTAMP(6)"), 1, "second")
-               )
-             )
-
-      assert {:ok, next_id, _lease, _ttl} = SqlLease.acquire(10_000, @opts)
-      assert next_id == id + 1
     end
 
     test "allows reuse after quarantine expires with a new token" do
@@ -164,5 +302,24 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
       {_, _log} = with_log(fn -> assert :ok = SqlLease.release(stale_lease, @opts) end)
       assert {:ok, _renewed, _ttl} = SqlLease.renew(current_lease, 10_000, @opts)
     end
+  end
+
+  defp clock_times(opts) do
+    db_now =
+      PgRepo.one(
+        from(l in NoNoncenseLease,
+          limit: 1,
+          select: type(fragment("CURRENT_TIMESTAMP(6)"), :utc_datetime_usec)
+        )
+      )
+
+    [db_now, Shared.now(opts)]
+  end
+
+  defp assert_expiry_between(expiry, before_clocks, after_clocks, ttl) do
+    earliest = Enum.max(before_clocks, DateTime) |> DateTime.add(ttl, :millisecond)
+    latest = Enum.max(after_clocks, DateTime) |> DateTime.add(ttl, :millisecond)
+    assert DateTime.compare(expiry, earliest) != :lt
+    assert DateTime.compare(expiry, latest) != :gt
   end
 end

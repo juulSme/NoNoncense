@@ -127,8 +127,15 @@ defmodule NoNoncense.MachineId do
   @impl true
   def init(opts) do
     name = opts[:name] || __MODULE__
-    instances = Keyword.fetch!(opts, :instances)
-    instances = Enum.map(instances, &Keyword.put_new(&1, :name, NoNoncense))
+    time_offset = :erlang.time_offset(:millisecond)
+    strategy_opts = Keyword.put(opts[:strategy_opts] || [], :time_offset, time_offset)
+
+    instances =
+      opts
+      |> Keyword.fetch!(:instances)
+      |> Enum.map(fn instance ->
+        instance |> Keyword.put(:time_offset, time_offset) |> Keyword.put_new(:name, NoNoncense)
+      end)
 
     # LeaseStore
     store_name = Module.concat(name, :LeaseStore)
@@ -146,7 +153,8 @@ defmodule NoNoncense.MachineId do
       |> Keyword.merge(
         name: lm_name,
         lease_store: store_name,
-        task_supervisor: task_supervisor_name
+        task_supervisor: task_supervisor_name,
+        strategy_opts: strategy_opts
       )
 
     lease_manager = {LeaseManager, lm_opts}

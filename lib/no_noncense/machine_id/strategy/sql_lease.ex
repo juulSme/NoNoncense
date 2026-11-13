@@ -42,6 +42,12 @@ if Code.ensure_loaded?(Ecto.Migration) do
 
     # Implementation notes:
     #
+    #   * Clock-skew invariant: acquire/renew store the later of DB time + TTL and local time +
+    #     TTL. Reuse requires both DB time and the successor's local time to pass that cutoff.
+    #     The local clock uses the fixed offset shared with nonce generation. Return the requested
+    #     TTL: the extra backend lifetime is a reuse barrier, not extra local generation time.
+    #     Release runs after factories are disabled and replaces the cutoff with the later clock
+    #     plus the quarantine duration.
     #   * `token` and `lock_version` serve different purposes and are deliberately not
     #     interchangeable. `claim/4` (called from `acquire/2`) uses `lock_version` as its
     #     optimistic-lock CAS guard when flipping an unclaimed/expired row to claimed, because at
@@ -64,64 +70,75 @@ if Code.ensure_loaded?(Ecto.Migration) do
     import Ecto.Query
 
     use NoNoncense.MachineId.Strategy
+    alias NoNoncense.MachineId.Strategy.Shared
 
     @type opt :: {:table, String.t()} | {:repo, module()}
     @type migrate_opt :: {:table_name, String.t()}
 
     @default_table_name "no_noncense_leases"
 
-    # we use the db clock to have a single clock determining eligibility
+    # The DB clock is one of the two clocks that must pass the reuse cutoff.
     defmacrop db_now(), do: quote(do: fragment("CURRENT_TIMESTAMP(6)"))
 
     defmacrop db_now_add(duration_ms) do
       quote do: datetime_add(db_now(), unquote(duration_ms), "millisecond")
     end
 
+    defmacrop greatest(a, b) do
+      quote do: fragment("GREATEST(?, ?)", unquote(a), unquote(b))
+    end
+
     @impl true
-    def acquire(lease_duration, opts) do
+    def acquire(ttl, opts) do
       {repo, table} = process_opts(opts)
+      token = :crypto.strong_rand_bytes(16)
+      local_expiry = calc_local_exp(ttl, opts)
 
       from(l in {table, NoNoncenseLease},
-        where: l.expires_at < db_now(),
+        where: l.expires_at < db_now() and l.expires_at < ^Shared.now(opts),
         order_by: l.id,
         select: [:id, :lock_version]
       )
       |> repo.all()
-      |> NoNoncense.MachineId.Strategy.Shared.shuffle_after_3()
+      |> Shared.shuffle_after_3()
       |> case do
         [] -> {:error, :exhausted}
-        available -> claim(available, repo, table, :crypto.strong_rand_bytes(16), lease_duration)
+        available -> claim(available, repo, table, token, ttl, local_expiry)
       end
     end
 
-    defp claim([], _, _, _, _), do: {:error, :conflict}
+    defp claim([], _, _, _, _, _), do: {:error, :conflict}
 
-    defp claim([%{id: id, lock_version: lock_version} | rest], repo, table, token, lease_duration) do
+    defp claim([%{id: id, lock_version: lock_version} | rest], repo, table, token, ttl, exp) do
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.lock_version == ^lock_version,
         update: [
-          set: [token: ^token, expires_at: db_now_add(^lease_duration)],
+          set: [token: ^token, expires_at: greatest(db_now_add(^ttl), ^exp)],
           inc: [lock_version: 1]
         ]
       )
       |> repo.update_all([])
       |> case do
-        {1, _} -> {:ok, id, {id, token}, lease_duration}
-        _ -> claim(rest, repo, table, token, lease_duration)
+        {1, _} -> {:ok, id, {id, token}, ttl}
+        _ -> claim(rest, repo, table, token, ttl, exp)
       end
     end
 
     @impl true
-    def renew({id, token}, lease_duration, opts) do
+    def renew({id, token}, ttl, opts) do
       {repo, table} = process_opts(opts)
+      local_expiry = calc_local_exp(ttl, opts)
 
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.token == ^token,
-        update: [set: [expires_at: db_now_add(^lease_duration)], inc: [lock_version: 1]]
+        update: [
+          set: [expires_at: greatest(db_now_add(^ttl), ^local_expiry)],
+          inc: [lock_version: 1]
+        ]
       )
       |> repo.update_all([])
       |> case do
-        {1, _} -> {:ok, {id, token}, lease_duration}
+        {1, _} -> {:ok, {id, token}, ttl}
         _ -> {:error, :lost, :not_owner}
       end
     end
@@ -129,12 +146,15 @@ if Code.ensure_loaded?(Ecto.Migration) do
     @impl true
     def release(_lease = {id, token}, opts) do
       {repo, table} = process_opts(opts)
+      quarantine_ttl = 1000
+      local_expiry = calc_local_exp(quarantine_ttl, opts)
 
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.token == ^token,
-        # we quarantine the ID for 1 second
-        # this prevents another node with a skewed clock from generating the same IDs
-        update: [set: [token: nil, expires_at: db_now_add(1_000)], inc: [lock_version: 1]]
+        update: [
+          set: [token: nil, expires_at: greatest(db_now_add(^quarantine_ttl), ^local_expiry)],
+          inc: [lock_version: 1]
+        ]
       )
       |> repo.update_all([])
 
@@ -182,6 +202,11 @@ if Code.ensure_loaded?(Ecto.Migration) do
       repo = Keyword.fetch!(opts, :repo)
       table = opts[:table] || @default_table_name
       {repo, table}
+    end
+
+    defp calc_local_exp(ttl, opts) do
+      local_exp_unix = Shared.now_unix(opts) + ttl
+      DateTime.from_unix!(local_exp_unix, :millisecond)
     end
   end
 end

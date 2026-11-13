@@ -49,9 +49,9 @@ if Code.ensure_loaded?(Redix) do
 
     # Implementation notes: each lease writes *two* fields to the hash via a single `HSETEX`:
     #
-    #   * the ID field itself, e.g. `"3" => token` - this is what `acquire/2` scans to find a
+    #   * the ID field itself, e.g. `"3" => ""` - this is what `acquire/2` scans to find a
     #     free ID, and what other nodes see as "ID 3 is taken".
-    #   * a marker field, e.g. `"token.3.<22-char token>" => "3"` - a field whose key embeds both
+    #   * a marker field, e.g. `"token.3.<22-char token>" => ""` - a field whose key embeds both
     #     the ID and the token.
     #
     # Both fields always share the same TTL and are written/refreshed/deleted together, so the
@@ -63,6 +63,13 @@ if Code.ensure_loaded?(Redix) do
     # ID 3 in between (new token, new marker field, old marker field gone since it expired/was
     # deleted), our marker field is missing and the FXX call fails with 0 fields set - reported
     # as `{:error, :lost, _}` - instead of silently refreshing or deleting somebody else's lease.
+    #
+    # Clock-skew invariant: a successor's nonce timestamps must exceed any the previous holder
+    # could have used. acquire/renew store local time + TTL in a persistent `exp.<id>` field that
+    # outlives the ownership fields. Reuse requires the ID fields to have expired in Redis and the
+    # successor's local clock to have passed `exp.<id>`. The local clock uses the fixed offset
+    # shared with nonce generation. Release runs after factories are disabled and replaces the
+    # cutoff with local time + the quarantine duration.
 
     use NoNoncense.MachineId.Strategy
     alias NoNoncense.MachineId.Strategy.Shared
@@ -75,53 +82,53 @@ if Code.ensure_loaded?(Redix) do
     @with_connection_err_msg "with_connection must be a fun/1 or a Redix connection"
 
     @impl true
-    def acquire(lease_duration, opts) do
+    def acquire(ttl, opts) do
+      now = Shared.now_unix(opts)
       {with_conn, key} = process_opts(opts)
-      with_conn.(&_acquire(&1, key, lease_duration))
+      with_conn.(&_acquire(&1, key, ttl, now))
     end
 
-    defp _acquire(conn, key, lease_duration) do
-      with {:ok, keys} <- Redix.command(conn, ["HKEYS", key]),
-           available_ids = [_ | _] <- keys |> leased_ids() |> available_ids() do
+    defp _acquire(conn, key, ttl, now) do
+      with {:ok, pairs} <- Redix.command(conn, ["HGETALL", key]),
+           {_tokens, exps, leased_ids} = pairs |> Enum.chunk_every(2) |> group_pairs(),
+           available_ids = [_ | _] <- leased_ids |> available_ids(exps, now) do
         token = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
-        available_ids |> Shared.shuffle_after_3() |> claim(conn, key, token, lease_duration)
+        available_ids |> Shared.shuffle_after_3() |> claim(conn, key, token, ttl, now + ttl)
       else
         [] -> {:error, :exhausted}
         error -> error
       end
     end
 
-    defp claim([], _, _, _, _), do: {:error, :conflict}
+    defp claim([], _, _, _, _, _), do: {:error, :conflict}
 
-    defp claim([id | tail], conn, key, token, lease_duration) do
-      with cmd = set_hash_fields_cmd(key, id, token, lease_duration, :if_none_exist),
-           {:ok, 1} <- Redix.command(conn, cmd) do
-        {:ok, id, {id, token}, lease_duration}
-      else
-        {:ok, 0} -> claim(tail, conn, key, token, lease_duration)
-        error -> error
+    defp claim([id | tail], conn, key, token, ttl, local_expiry) do
+      case update_lease(conn, key, {id, token}, ttl, :if_none_exist, local_expiry) do
+        :ok -> {:ok, id, {id, token}, ttl}
+        {:error, :condition_not_met} -> claim(tail, conn, key, token, ttl, local_expiry)
+        {:error, _reason} = error -> error
       end
     end
 
     @impl true
-    def renew(lease = {id, token}, lease_duration, opts) do
+    def renew(lease, ttl, opts) do
+      local_expiry = Shared.now_unix(opts) + ttl
       {with_conn, key} = process_opts(opts)
 
-      exec(with_conn, set_hash_fields_cmd(key, id, token, lease_duration, :if_all_exist))
-      |> case do
-        {:ok, 1} -> {:ok, lease, lease_duration}
-        {:ok, 0} -> {:error, :lost, :not_owner}
-        {:error, reason} -> {:error, :retry, reason}
-        _ -> {:error, :retry, "unknown"}
-      end
+      with_conn.(fn conn ->
+        case update_lease(conn, key, lease, ttl, :if_all_exist, local_expiry) do
+          :ok -> {:ok, lease, ttl}
+          {:error, :condition_not_met} -> {:error, :lost, :not_owner}
+          {:error, reason} -> {:error, :retry, reason}
+        end
+      end)
     end
 
     @impl true
-    def release(_lease = {id, token}, opts) do
+    def release(lease, opts) do
+      local_expiry = Shared.now_unix(opts) + 1_000
       {with_conn, key} = process_opts(opts)
-      # we quarantine the ID for 1 second
-      # this prevents another node with a skewed clock from generating the same IDs
-      exec(with_conn, set_hash_fields_cmd(key, id, token, 1_000, :if_all_exist))
+      with_conn.(&update_lease(&1, key, lease, 1_000, :if_all_exist, local_expiry))
       :ok
     end
 
@@ -143,34 +150,51 @@ if Code.ensure_loaded?(Redix) do
     defp process_with_conn(c = {atom, node}) when is_atom(atom) and is_atom(node), do: & &1.(c)
     defp process_with_conn(_), do: raise(ArgumentError, @with_connection_err_msg)
 
-    defp exec(with_conn, command), do: with_conn.(fn conn -> Redix.command(conn, command) end)
-
-    defp leased_ids(keys), do: keys |> Enum.flat_map(&key_to_id/1) |> :ordsets.from_list()
-
-    defp key_to_id(binary) do
-      if id?(binary), do: int_or_ignore(binary), else: []
+    defp group_pairs(pairs) do
+      Enum.reduce(pairs, {[], %{}, []}, fn [k, v], {tokens, exps, ids} ->
+        case k do
+          "token." <> _ -> {[k | tokens], exps, ids}
+          "exp." <> _ -> {tokens, Map.put(exps, k, int_or_nil(v)), ids}
+          _ -> {tokens, exps, int_or_nil(k) |> :ordsets.add_element(ids)}
+        end
+      end)
+      |> then(fn {tokens, exps, ids} -> {tokens, exps, :ordsets.del_element(nil, ids)} end)
     end
 
-    defp id?(binary), do: not marker?(binary)
-
-    defp marker?(binary), do: match?("token." <> _, binary)
-
-    defp int_or_ignore(binary) do
-      try do: [String.to_integer(binary)], rescue: (_ -> [])
+    defp int_or_nil(binary) do
+      try do: String.to_integer(binary), rescue: (_ -> nil)
     end
 
-    defp available_ids(leased_ids), do: :ordsets.subtract(@all_ids, leased_ids)
+    defp available_ids(leased_ids, exps, now) do
+      :ordsets.subtract(@all_ids, leased_ids)
+      |> Enum.filter(fn id -> (Map.get(exps, "exp.#{id}") || 0) < now end)
+    end
+
+    defp update_lease(conn, key, {id, token}, ttl, condition, local_expiry) do
+      with hash_fields_cmd = set_hash_fields_cmd(key, id, token, ttl, condition),
+           {:ok, 1} <- Redix.command(conn, hash_fields_cmd),
+           # only written once the conditional write succeeded, so a failed claim can't touch
+           # the current holder's cutoff
+           exp_cmd = ["HSET", key, "exp.#{id}", to_string(local_expiry)],
+           {:ok, res} when res in [0, 1] <- Redix.command(conn, exp_cmd) do
+        :ok
+      else
+        {:ok, 0} -> {:error, :condition_not_met}
+        {:ok, result} -> {:error, result}
+        {:error, _reason} = error -> error
+      end
+    end
 
     defp set_hash_fields_cmd(key, id, token, ttl, condition) do
       ttl = Integer.to_string(ttl)
       id = Integer.to_string(id)
       marker_key = "token.#{id}.#{token}"
-      condition = to_condition_code(condition)
+      condition = to_cond_code(condition)
 
-      ["HSETEX", key, condition, "PX", ttl, "FIELDS", "2", id, token, marker_key, id]
+      ["HSETEX", key, condition, "PX", ttl, "FIELDS", "2", id, "", marker_key, ""]
     end
 
-    defp to_condition_code(:if_all_exist), do: "FXX"
-    defp to_condition_code(:if_none_exist), do: "FNX"
+    defp to_cond_code(:if_all_exist), do: "FXX"
+    defp to_cond_code(:if_none_exist), do: "FNX"
   end
 end
