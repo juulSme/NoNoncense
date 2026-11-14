@@ -4,10 +4,10 @@ if Code.ensure_loaded?(Redix) do
     Strategy to acquire a machine ID lease from Redis, coordinating uniqueness across nodes
     through a single Redis hash.
 
-    Each machine ID (`0..511`) is a field in the hash; a node prefers the lowest free ID and
-    holds it by keeping that field's value (a random token) alive with a TTL, renewing it
-    periodically.
-    Requires Redis 8+ or Valkey 9+ for `HSETEX`'s conditional (`FNX`/`FXX`) and per-field TTL support.
+    A node prefers the lowest eligible machine ID (`0..511`) and holds it through a
+    token-protected lease with a TTL, renewing it periodically.
+    The strategy protects ID reuse between nodes against clock skew by recording the lease holder's local expiry and requiring the successor's local clock to pass that cutoff.
+    Requires Redis 8+ or Valkey 9+ for `HSETEX`'s conditional (`FNX`/`FXX`) and per-field TTL support. Uses MULTI/EXEC, but no Lua scripts or server functions.
 
     Configure the strategy when starting `NoNoncense.MachineId`, after your Redix instance or pool:
 
@@ -47,7 +47,7 @@ if Code.ensure_loaded?(Redix) do
       * `:key` - the Redis hash key to store leases under (default `"no_noncense_leases"`)
     """
 
-    # Implementation notes: each lease writes *two* fields to the hash via a single `HSETEX`:
+    # Implementation notes: each lease writes two TTL'd fields to the hash via a single `HSETEX`:
     #
     #   * the ID field itself, e.g. `"3" => ""` - this is what `acquire/2` scans to find a
     #     free ID, and what other nodes see as "ID 3 is taken".
@@ -66,7 +66,11 @@ if Code.ensure_loaded?(Redix) do
     #
     # Clock-skew invariant: a successor's nonce timestamps must exceed any the previous holder
     # could have used. acquire/renew store local time + TTL in a persistent `exp.<id>` field that
-    # outlives the ownership fields. Reuse requires the ID fields to have expired in Redis and the
+    # outlives the ownership fields. The lease write and the `exp.<id>` write run in one
+    # MULTI/EXEC, so an expired holder can't overwrite its successor's cutoff. The `exp` write is
+    # an `HSETEX FXX KEEPTTL` that includes the marker field, so it only applies if the
+    # conditional lease write succeeded; the preceding `HSETNX` just ensures `exp.<id>` exists
+    # for FXX. Reuse requires the ID fields to have expired in Redis and the
     # successor's local clock to have passed `exp.<id>`. The local clock uses the fixed offset
     # shared with nonce generation. Release runs after factories are disabled and replaces the
     # cutoff with local time + the quarantine duration.
@@ -91,7 +95,7 @@ if Code.ensure_loaded?(Redix) do
     defp _acquire(conn, key, ttl, now) do
       with {:ok, pairs} <- Redix.command(conn, ["HGETALL", key]),
            {_markers, exps, leased_ids} = group_pairs(pairs),
-           available_ids = [_ | _] <- leased_ids |> available_ids(exps, now) do
+           available_ids = [_ | _] <- available_ids(leased_ids, exps, now) do
         token = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
         available_ids |> Shared.shuffle_after_3() |> claim(conn, key, token, ttl, now + ttl)
       else
@@ -157,7 +161,7 @@ if Code.ensure_loaded?(Redix) do
       |> Enum.reduce({[], %{}, []}, fn [k, v], {markers, exps, ids} ->
         case k do
           "token." <> _ -> {[k | markers], exps, ids}
-          "exp." <> _ -> {markers, Map.put(exps, k, int_or_nil(v) || 0), ids}
+          "exp." <> _ -> {markers, Map.put(exps, k, int_or_nil(v)), ids}
           _ -> {markers, exps, int_or_nil(k) |> :ordsets.add_element(ids)}
         end
       end)
@@ -174,27 +178,28 @@ if Code.ensure_loaded?(Redix) do
     end
 
     defp update_lease(conn, key, {id, token}, ttl, condition, local_expiry) do
-      with hash_fields_cmd = set_hash_fields_cmd(key, id, token, ttl, condition),
-           {:ok, 1} <- Redix.command(conn, hash_fields_cmd),
-           # only written once the conditional write succeeded, so a failed claim can't touch
-           # the current holder's cutoff
-           exp_cmd = ["HSET", key, "exp.#{id}", to_string(local_expiry)],
-           {:ok, res} when res in [0, 1] <- Redix.command(conn, exp_cmd) do
-        :ok
-      else
-        {:ok, 0} -> {:error, :condition_not_met}
+      id = Integer.to_string(id)
+      ttl = Integer.to_string(ttl)
+      local_expiry = Integer.to_string(local_expiry)
+      marker_fld = "token.#{id}.#{token}"
+      exp_fld = "exp.#{id}"
+      condition = to_cond_code(condition)
+
+      Redix.transaction_pipeline(conn, [
+        # create/update id and marker fields if the condition is met, with specified ttl
+        ["HSETEX", key, condition, "PX", ttl, "FIELDS", "2", id, "", marker_fld, ""],
+        # create exp_fld if it does not exist
+        ["HSETNX", key, exp_fld, "0"],
+        # if we own the lease, write local expiry to exp_fld, with unchanged ttl
+        # we own the lease if the marker field exists after the first command
+        ["HSETEX", key, "FXX", "KEEPTTL", "FIELDS", "2", marker_fld, "", exp_fld, local_expiry]
+      ])
+      |> case do
+        {:ok, [1, hsetnx_res, 1]} when hsetnx_res in [0, 1] -> :ok
+        {:ok, [0, _, _]} -> {:error, :condition_not_met}
         {:ok, result} -> {:error, result}
         {:error, _reason} = error -> error
       end
-    end
-
-    defp set_hash_fields_cmd(key, id, token, ttl, condition) do
-      ttl = Integer.to_string(ttl)
-      id = Integer.to_string(id)
-      marker_key = "token.#{id}.#{token}"
-      condition = to_cond_code(condition)
-
-      ["HSETEX", key, condition, "PX", ttl, "FIELDS", "2", id, "", marker_key, ""]
     end
 
     defp to_cond_code(:if_all_exist), do: "FXX"

@@ -6,7 +6,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
 
     Each machine ID (`0..511`) is a row in the table. A node claims an expired row using a random
     token and renews it periodically.
-
+    The strategy protects ID reuse between nodes against clock skew by recording the lease holder's local expiry and requiring the successor's local clock to pass that cutoff.
     Requires a table with one pre-populated row per possible machine ID - see the migration below.
 
     Configure the strategy when starting `NoNoncense.MachineId` and add it after your Repo:

@@ -141,19 +141,12 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
     test "tries the next free ID after a conditional conflict" do
       parent = self()
 
-      stub(Redix, :command, fn :conn, command ->
-        send(parent, {:redis_command, command})
+      stub(Redix, :command, fn :conn, ["HGETALL", "test-key"] -> {:ok, []} end)
 
-        case command do
-          ["HGETALL", "test-key"] ->
-            {:ok, []}
-
-          ["HSETEX", "test-key", "FNX", "PX", _ttl, "FIELDS", "2", id | _] ->
-            {:ok, if(id == "0", do: 0, else: 1)}
-
-          ["HSET", "test-key", "exp.1", _] ->
-            {:ok, 1}
-        end
+      stub(Redix, :transaction_pipeline, fn :conn, [first | _] ->
+        send(parent, {:redis_command, first})
+        ["HSETEX", "test-key", "FNX", "PX", _ttl, "FIELDS", "2", id | _] = first
+        if id == "0", do: {:ok, [0, 1, 0]}, else: {:ok, [1, 1, 1]}
       end)
 
       assert {:ok, 1, {1, _token}, 10_000} = RedisLease.acquire(10_000, mock_opts())
@@ -168,13 +161,11 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
     test "returns a conflict after every free ID is claimed concurrently" do
       parent = self()
 
-      stub(Redix, :command, fn :conn, command ->
-        send(parent, {:redis_command, command})
+      stub(Redix, :command, fn :conn, ["HGETALL", "test-key"] -> {:ok, []} end)
 
-        case command do
-          ["HGETALL", "test-key"] -> {:ok, []}
-          ["HSETEX" | _] -> {:ok, 0}
-        end
+      stub(Redix, :transaction_pipeline, fn :conn, [first | _] ->
+        send(parent, {:redis_command, first})
+        {:ok, [0, 1, 0]}
       end)
 
       assert {:error, :conflict} = RedisLease.acquire(10_000, mock_opts())
@@ -244,8 +235,12 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
       expire_lease(fixtures.conn, fixtures.key, stale_lease)
       assert {:ok, 0, current_lease, _} = RedisLease.acquire(10_000, fixtures.opts)
 
+      current_expiry = lease_expiry(fixtures.conn, fixtures.key, current_lease)
+
       assert {:error, :lost, :not_owner} =
                RedisLease.renew(stale_lease, 10_000, fixtures.opts)
+
+      assert lease_expiry(fixtures.conn, fixtures.key, current_lease) == current_expiry
 
       assert {:ok, ^current_lease, 10_000} =
                RedisLease.renew(current_lease, 10_000, fixtures.opts)
@@ -373,42 +368,28 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
     test "acquire propagates an exp write error" do
       error = %Redix.Error{message: "ERR denied"}
 
-      stub(Redix, :command, fn :conn, command ->
-        case command do
-          ["HGETALL", "test-key"] -> {:ok, []}
-          ["HSETEX" | _] -> {:ok, 1}
-          ["HSET" | _] -> {:error, error}
-        end
-      end)
+      stub(Redix, :command, fn :conn, ["HGETALL", "test-key"] -> {:ok, []} end)
+      stub(Redix, :transaction_pipeline, fn :conn, _ -> {:error, error} end)
 
       assert {:error, ^error} = RedisLease.acquire(10_000, mock_opts())
     end
 
     test "renew reports a conditional-write command error as retryable" do
       error = %Redix.Error{message: "ERR denied"}
-      expect(Redix, :command, fn :conn, ["HSETEX" | _] -> {:error, error} end)
+      expect(Redix, :transaction_pipeline, fn :conn, _ -> {:ok, [error, error, error]} end)
 
-      assert {:error, :retry, ^error} = RedisLease.renew({0, "token"}, 10_000, mock_opts())
+      assert {:error, :retry, [^error, ^error, ^error]} =
+               RedisLease.renew({0, "token"}, 10_000, mock_opts())
     end
 
-    test "renew propagates an exp write connection error" do
-      stub(Redix, :command, fn :conn, command ->
-        case command do
-          ["HSETEX" | _] -> {:ok, 1}
-          ["HSET" | _] -> {:error, :closed}
-        end
-      end)
+    test "renew propagates a connection error" do
+      stub(Redix, :transaction_pipeline, fn :conn, _ -> {:error, :closed} end)
 
       assert {:error, :retry, :closed} = RedisLease.renew({0, "token"}, 10_000, mock_opts())
     end
 
-    test "release ignores an exp write failure" do
-      stub(Redix, :command, fn :conn, command ->
-        case command do
-          ["HSETEX" | _] -> {:ok, 1}
-          ["HSET" | _] -> {:error, :closed}
-        end
-      end)
+    test "release ignores a write failure" do
+      stub(Redix, :transaction_pipeline, fn :conn, _ -> {:error, :closed} end)
 
       assert :ok = RedisLease.release({0, "token"}, mock_opts())
     end
