@@ -1,6 +1,7 @@
 import Ecto.Query
 alias MyApp.{PgRepo, MysqlRepo}
-alias NoNoncense.MachineId.Strategy.SqlLease.NoNoncenseLease
+alias NoNoncense.MachineId.Strategy.{SqlLease, RedisLease}
+alias SqlLease.NoNoncenseLease
 
 defmodule MyApp.IexTelemetry do
   require Logger
@@ -76,12 +77,12 @@ defmodule MyApp.DevFuns do
 
   def redix_cmd(cmd), do: Redix.command(MyApp.Redix, cmd)
 
-  defp markers_ids do
-    {:ok, keys} = redix_cmd(~w(HKEYS no_noncense_leases))
-    Enum.split_with(keys, &match?("token." <> _, &1))
+  defp get_redis_data do
+    {:ok, pairs} = redix_cmd(~w(HGETALL no_noncense_leases))
+    RedisLease.group_pairs(pairs)
   end
 
-  def list_redis_leases, do: markers_ids() |> elem(1)
+  def list_redis_leases, do: get_redis_data() |> elem(2)
 
   def invalidate_redis_leases, do: redix_cmd(~w(DEL no_noncense_leases))
 
@@ -92,16 +93,13 @@ defmodule MyApp.DevFuns do
   def claim_redis_lease(id_or_ids) do
     ids = to_ids_list(id_or_ids) |> Enum.map(&Integer.to_string/1)
     field_n = to_string(length(ids) * 2)
-    {:ok, pairs} = redix_cmd(~w(HGETALL no_noncense_leases))
-    pairs = Enum.chunk_every(pairs, 2) |> Map.new(fn [k, v] -> {k, v} end)
-    claimed = Map.take(pairs, ids)
-    markers = Enum.map(claimed, fn {id, token} -> "token.#{id}.#{token}" end)
+    {markers, _exps, _ids} = get_redis_data()
     if markers != [], do: redix_cmd(["HDEL", "no_noncense_leases" | markers])
 
     new_pairs =
       Enum.flat_map(ids, fn id ->
         token = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
-        ["#{id}", token, "token.#{id}.#{token}", "#{id}"]
+        [id, "", "token.#{id}.#{token}", ""]
       end)
 
     redix_cmd(["HSETEX", "no_noncense_leases", "PX", "300000", "FIELDS", field_n | new_pairs])

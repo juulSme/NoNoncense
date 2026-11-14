@@ -90,7 +90,7 @@ if Code.ensure_loaded?(Redix) do
 
     defp _acquire(conn, key, ttl, now) do
       with {:ok, pairs} <- Redix.command(conn, ["HGETALL", key]),
-           {_tokens, exps, leased_ids} = pairs |> Enum.chunk_every(2) |> group_pairs(),
+           {_markers, exps, leased_ids} = group_pairs(pairs),
            available_ids = [_ | _] <- leased_ids |> available_ids(exps, now) do
         token = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
         available_ids |> Shared.shuffle_after_3() |> claim(conn, key, token, ttl, now + ttl)
@@ -150,15 +150,18 @@ if Code.ensure_loaded?(Redix) do
     defp process_with_conn(c = {atom, node}) when is_atom(atom) and is_atom(node), do: & &1.(c)
     defp process_with_conn(_), do: raise(ArgumentError, @with_connection_err_msg)
 
-    defp group_pairs(pairs) do
-      Enum.reduce(pairs, {[], %{}, []}, fn [k, v], {tokens, exps, ids} ->
+    @doc false
+    def group_pairs(pairs) do
+      pairs
+      |> Enum.chunk_every(2)
+      |> Enum.reduce({[], %{}, []}, fn [k, v], {markers, exps, ids} ->
         case k do
-          "token." <> _ -> {[k | tokens], exps, ids}
-          "exp." <> _ -> {tokens, Map.put(exps, k, int_or_nil(v)), ids}
-          _ -> {tokens, exps, int_or_nil(k) |> :ordsets.add_element(ids)}
+          "token." <> _ -> {[k | markers], exps, ids}
+          "exp." <> _ -> {markers, Map.put(exps, k, int_or_nil(v) || 0), ids}
+          _ -> {markers, exps, int_or_nil(k) |> :ordsets.add_element(ids)}
         end
       end)
-      |> then(fn {tokens, exps, ids} -> {tokens, exps, :ordsets.del_element(nil, ids)} end)
+      |> then(fn {markers, exps, ids} -> {markers, exps, :ordsets.del_element(nil, ids)} end)
     end
 
     defp int_or_nil(binary) do
