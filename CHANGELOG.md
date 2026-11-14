@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0]
+
+- Reject strategy-provided machine IDs outside `0..511`; an invalid ID fails startup immediately.
+- Use the `:name` option as the `NoNoncense.MachineId` supervisor child ID, allowing multiple named instances under one supervisor. Existing supervisor references to named children must use their configured names.
+- Reduce the columns fetched when acquiring a `SqlLease`.
+- Clarify that the `SqlLease` migration must run before starting a machine ID supervisor using that strategy.
+- Protect `SqlLease` and `RedisLease` ID reuse against clock skew by recording the lease holder's local expiry and requiring the successor's local clock to pass that cutoff. Lease strategies and nonce factories share a fixed clock offset.
+- Quarantine released IDs for one second before reuse; clock-skew protection may delay reuse further.
+- Report confirmed lease ownership loss as `:not_owner` instead of `:expired` in `SqlLease` and `RedisLease`, including lease-loss callbacks and telemetry.
+- Limit conflict-guard broadcasts to the resolved machine ID and start timestamp.
+
 ## [2.1.0]
 
 Machine ID lease management has been substantially reworked to better withstand coordinator
