@@ -73,6 +73,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
     import Ecto.Query
 
     use NoNoncense.MachineId.Strategy
+    use NoNoncense.Constants
     alias NoNoncense.MachineId.Strategy.Shared
 
     @type opt :: {:table, String.t()} | {:repo, module()}
@@ -149,13 +150,12 @@ if Code.ensure_loaded?(Ecto.Migration) do
     @impl true
     def release(_lease = {id, token}, opts) do
       {repo, table} = process_opts(opts)
-      quarantine_ttl = 1000
-      local_expiry = calc_local_exp(quarantine_ttl, opts)
+      local_expiry = calc_local_exp(@quarantine_ttl, opts)
 
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.token == ^token,
         update: [
-          set: [token: nil, expires_at: greatest(db_now_add(^quarantine_ttl), ^local_expiry)],
+          set: [token: nil, expires_at: greatest(db_now_add(^@quarantine_ttl), ^local_expiry)],
           inc: [lock_version: 1]
         ]
       )

@@ -190,7 +190,7 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
         after_clocks = clock_times(opts)
         released = PgRepo.get(NoNoncenseLease, id)
 
-        assert_expiry_between(released.expires_at, before_clocks, after_clocks, 1_000)
+        assert_expiry_between(released.expires_at, before_clocks, after_clocks, 3_000)
         assert DateTime.compare(released.expires_at, previous_expiry) == :lt
         assert released.token == nil
         assert released.lock_version == 2
@@ -240,7 +240,7 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
                SqlLease.renew(successor_lease, 30_000, successor_opts)
     end
 
-    test "quarantines the lease for one second according to both clocks and prevents renewal" do
+    test "quarantines the lease for three seconds according to both clocks and prevents renewal" do
       assert {:ok, id, lease, _ttl} = SqlLease.acquire(10_000, @opts)
       opts = Keyword.put(@opts, :time_offset, :erlang.time_offset(:millisecond))
       local_before = Shared.now(opts)
@@ -264,8 +264,8 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeasePgTest do
         )
 
       local_after = Shared.now(opts)
-      earliest_expiry = Enum.max([local_before, db_before], DateTime) |> DateTime.add(1, :second)
-      latest_expiry = Enum.max([local_after, db_after], DateTime) |> DateTime.add(1, :second)
+      earliest_expiry = Enum.max([local_before, db_before], DateTime) |> DateTime.add(3, :second)
+      latest_expiry = Enum.max([local_after, db_after], DateTime) |> DateTime.add(3, :second)
 
       assert released.token == nil
       assert released.lock_version == 2

@@ -82,6 +82,7 @@ if Code.ensure_loaded?(Redix) do
     # cutoff with local time + the quarantine duration.
 
     use NoNoncense.MachineId.Strategy
+    use NoNoncense.Constants
     alias NoNoncense.MachineId.Strategy.Shared
 
     @type with_connection :: ((Redix.connection() -> any()) -> any()) | Redix.connection()
@@ -136,9 +137,9 @@ if Code.ensure_loaded?(Redix) do
 
     @impl true
     def release(lease, opts) do
-      local_expiry = Shared.now_unix(opts) + 1_000
+      local_expiry = Shared.now_unix(opts) + @quarantine_ttl
       {with_conn, key} = process_opts(opts)
-      with_conn.(&update_lease(&1, key, lease, 1_000, :if_all_exist, local_expiry))
+      with_conn.(&update_lease(&1, key, lease, @quarantine_ttl, :if_all_exist, local_expiry))
       :ok
     end
 

@@ -196,7 +196,7 @@ defmodule NoNoncense.MachineId.IntegrationTest do
                  "token.#{id}.#{token}"
                ])
 
-      assert id_ttl > 0 and id_ttl <= 1_000
+      assert id_ttl > 0 and id_ttl <= 3_000
       assert marker_ttl == id_ttl
 
       replacement_name = unique_name("db")

@@ -46,6 +46,8 @@ defmodule NoNoncense.Constants do
       @min_lease_ttl 30_000
       # lease is considered expired 10s before its nominal ttl
       @lease_safety_margin 10_000
+      # quarantine released machine IDs for three seconds
+      @quarantine_ttl 3_000
     end
   end
 end

@@ -267,8 +267,8 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
         after_ = Shared.now_unix(opts)
         expiry = lease_expiry(fixtures.conn, fixtures.key, lease)
 
-        assert expiry >= before + 1_000
-        assert expiry <= after_ + 1_000
+        assert expiry >= before + 3_000
+        assert expiry <= after_ + 3_000
         assert expiry < previous_expiry
       end
     end
@@ -310,7 +310,7 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
                RedisLease.renew(successor_lease, 30_000, successor_opts)
     end
 
-    test "quarantines both fields for one second and skips the released ID", fixtures do
+    test "quarantines both fields for three seconds and skips the released ID", fixtures do
       assert {:ok, 0, lease = {0, token}, _} = RedisLease.acquire(10_000, fixtures.opts)
       assert :ok = RedisLease.release(lease, fixtures.opts)
 
@@ -324,7 +324,7 @@ defmodule NoNoncense.MachineId.Strategy.RedisLeaseTest do
                  "token.0.#{token}"
                ])
 
-      assert id_ttl > 0 and id_ttl <= 1_000
+      assert id_ttl > 1_000 and id_ttl <= 3_000
       assert marker_ttl == id_ttl
       assert {:ok, 1, _lease, _ttl} = RedisLease.acquire(10_000, fixtures.opts)
     end
