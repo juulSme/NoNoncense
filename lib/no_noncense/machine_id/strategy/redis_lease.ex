@@ -7,7 +7,6 @@ if Code.ensure_loaded?(Redix) do
     A node prefers the lowest eligible machine ID (`0..511`) and holds it through a
     token-protected lease with a TTL, renewing it periodically.
     The strategy protects ID reuse between nodes against clock skew by recording the lease holder's local expiry and requiring the successor's local clock to pass that cutoff.
-    Requires Redis 8+ or Valkey 9+ for `HSETEX`'s conditional (`FNX`/`FXX`) and per-field TTL support. Uses MULTI/EXEC, but no Lua scripts or server functions.
 
     Configure the strategy when starting `NoNoncense.MachineId`, after your Redix instance or pool:
 
@@ -45,6 +44,13 @@ if Code.ensure_loaded?(Redix) do
           ```
 
       * `:key` - the Redis hash key to store leases under (default `"no_noncense_leases"`)
+
+    ## Requirements
+
+    - Redis 8+ or Valkey 9+.
+    - Command permissions for `HGETALL`, `HSETEX`, `HSETNX`, `MULTI`, `EXEC` (or no ACL restrictions).
+    - Don't use an `allkeys-*` [eviction policy](https://redis.io/docs/latest/develop/reference/eviction/) to avoid the leases hash being evicted under memory pressure.
+    - Use standalone Redis or Sentinel-managed Redis. Note that lost writes during asynchronous failover can result in duplicate IDs.
     """
 
     # Implementation notes: each lease writes two TTL'd fields to the hash via a single `HSETEX`:

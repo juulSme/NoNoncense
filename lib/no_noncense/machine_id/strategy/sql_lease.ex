@@ -9,6 +9,11 @@ if Code.ensure_loaded?(Ecto.Migration) do
     The strategy protects ID reuse between nodes against clock skew by recording the lease holder's local expiry and requiring the successor's local clock to pass that cutoff.
     Requires a table with one pre-populated row per possible machine ID - see the migration below.
 
+    > #### Run the migration before enabling this strategy {: .warning}
+    >
+    > Run the migration before starting `NoNoncense.MachineId` with this strategy. Without the
+    > leases table, it cannot acquire a machine ID and will prevent the application from starting.
+
     Configure the strategy when starting `NoNoncense.MachineId` and add it after your Repo:
 
         children = [
@@ -36,8 +41,6 @@ if Code.ensure_loaded?(Ecto.Migration) do
           def change, do: NoNoncense.MachineId.Strategy.SqlLease.migrate()
         end
 
-    Note that the migration has to run **before** you can configure `NoNoncense.MachineId` with this strategy.
-    Without the migration, the strategy can't acquire a machine ID and will prevent the application from starting.
     """
 
     # Implementation notes:

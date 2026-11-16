@@ -20,7 +20,7 @@ defmodule NoNoncense do
   through a pluggable strategy and initializes your `NoNoncense` instances automatically. Startup
   blocks until the initial lease is acquired.
 
-  For example, with [`SqlLease`](./NoNoncense.MachineId.Strategy.SqlLease.html) (after running its migration):
+  For example, with [`SqlLease`](./NoNoncense.MachineId.Strategy.SqlLease.html) (**after running its migration**; see its docs):
 
       # lib/my_app/application.ex
       defmodule MyApp.Application do

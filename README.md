@@ -38,7 +38,7 @@ Documentation can be found on [hexdocs.pm](https://hexdocs.pm/no_noncense/).
 
 Add `NoNoncense.MachineId` to your supervision tree. It acquires and renews a unique machine ID through a pluggable strategy and initializes your `NoNoncense` instances automatically. Startup blocks until the initial lease is acquired.
 
-For example, with [`SqlLease`](https://hexdocs.pm/no_noncense/NoNoncense.MachineId.Strategy.SqlLease.html) (after running its migration):
+For example, with [`SqlLease`](https://hexdocs.pm/no_noncense/NoNoncense.MachineId.Strategy.SqlLease.html) (**after running its migration**; see its docs):
 
 ```elixir
 children = [
