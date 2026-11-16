@@ -36,7 +36,7 @@ defmodule NoNoncense.MachineId do
   | [`HostIdentifiers`](./NoNoncense.MachineId.Strategy.HostIdentifiers.html) | None | Derives IDs from node names/IPs; requires identical config on all nodes; no coordination |
   | [`EnvironmentVariable`](./NoNoncense.MachineId.Strategy.EnvironmentVariable.html) | Kubernetes StatefulSet | Reads pod ordinal env var; no coordination |
   | [`SqlLease`](./NoNoncense.MachineId.Strategy.SqlLease.html) | PostgreSQL or MySQL | Dynamically coordinates across nodes; requires a migration (see module doc) |
-  | [`RedisLease`](./NoNoncense.MachineId.Strategy.RedisLease.html) | Redis 8+ / Valkey 9+ | Dynamically coordinates across nodes; requires [`HSETEX`](https://valkey.io/commands/hsetex/) support |
+  | [`RedisLease`](./NoNoncense.MachineId.Strategy.RedisLease.html) | Redis 8+ / Valkey 9+ | Dynamically coordinates across nodes. |
 
   ## Conflict Guard
 

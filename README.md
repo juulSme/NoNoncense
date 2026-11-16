@@ -36,7 +36,7 @@ Documentation can be found on [hexdocs.pm](https://hexdocs.pm/no_noncense/).
 
 ## Usage
 
-Add `NoNoncense.MachineId` to your supervision tree. It acquires and renews a unique machine ID through a pluggable strategy and initializes your `NoNoncense` instances automatically. Startup blocks until the initial lease is acquired.
+Add [`NoNoncense.MachineId`](https://hexdocs.pm/no_noncense/NoNoncense.MachineId.html) to your supervision tree. It acquires and renews a unique machine ID through a pluggable strategy and initializes your `NoNoncense` instances automatically. Startup blocks until the initial lease is acquired.
 
 For example, with [`SqlLease`](https://hexdocs.pm/no_noncense/NoNoncense.MachineId.Strategy.SqlLease.html) (**after running its migration**; see its docs):
 
@@ -72,6 +72,15 @@ iex> <<_::64>> = NoNoncense.encrypted_nonce(64)
 iex> <<_::96>> = NoNoncense.encrypted_nonce(96)
 iex> <<_::128>> = NoNoncense.encrypted_nonce(128)
 ```
+
+### Strategies
+
+| Strategy                                                                                                       | Infrastructure         | Notes                                                                                    |
+| -------------------------------------------------------------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
+| [`HostIdentifiers`](https://hexdocs.pm/no_noncense/NoNoncense.MachineId.Strategy.HostIdentifiers.html)         | None                   | Derives IDs from node names/IPs; requires identical config on all nodes; no coordination |
+| [`EnvironmentVariable`](https://hexdocs.pm/no_noncense/NoNoncense.MachineId.Strategy.EnvironmentVariable.html) | Kubernetes StatefulSet | Reads pod ordinal env var; no coordination                                               |
+| [`SqlLease`](https://hexdocs.pm/no_noncense/NoNoncense.MachineId.Strategy.SqlLease.html)                       | PostgreSQL or MySQL    | Dynamically coordinates across nodes; requires a migration (see module doc)              |
+| [`RedisLease`](https://hexdocs.pm/no_noncense/NoNoncense.MachineId.Strategy.RedisLease.html)                   | Redis 8+ / Valkey 9+   | Dynamically coordinates across nodes.                                                    |
 
 ### Telemetry
 
