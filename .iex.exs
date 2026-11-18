@@ -77,12 +77,12 @@ defmodule MyApp.DevFuns do
 
   def redix_cmd(cmd), do: Redix.command(MyApp.Redix, cmd)
 
-  defp get_redis_data do
+  defp get_lease_fields do
     {:ok, pairs} = redix_cmd(~w(HGETALL no_noncense_leases))
-    RedisLease.group_pairs(pairs)
+    RedisLease.parse_lease_fields(pairs)
   end
 
-  def list_redis_leases, do: get_redis_data() |> elem(2)
+  def list_redis_leases, do: get_lease_fields() |> elem(2)
 
   def invalidate_redis_leases, do: redix_cmd(~w(DEL no_noncense_leases))
 
@@ -93,7 +93,7 @@ defmodule MyApp.DevFuns do
   def claim_redis_lease(id_or_ids) do
     ids = to_ids_list(id_or_ids) |> Enum.map(&Integer.to_string/1)
     field_n = to_string(length(ids) * 2)
-    {markers, _exps, _ids} = get_redis_data()
+    {markers, _exps, _ids} = get_lease_fields()
     if markers != [], do: redix_cmd(["HDEL", "no_noncense_leases" | markers])
 
     new_pairs =

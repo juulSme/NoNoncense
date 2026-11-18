@@ -163,7 +163,7 @@ if Code.ensure_loaded?(Redix) do
     defp process_with_conn(_), do: raise(ArgumentError, @with_connection_err_msg)
 
     @doc false
-    def group_pairs(pairs) do
+    def parse_lease_fields(pairs) do
       pairs
       |> Enum.chunk_every(2)
       |> Enum.reduce({[], %{}, []}, fn [k, v], {markers, exps, ids} ->
