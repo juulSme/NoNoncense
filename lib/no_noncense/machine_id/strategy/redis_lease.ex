@@ -100,25 +100,26 @@ if Code.ensure_loaded?(Redix) do
     end
 
     defp _acquire(conn, key, ttl, now) do
-      with {:ok, pairs} <- Redix.command(conn, ["HGETALL", key]),
-           {_markers, exps, leased_ids} = group_pairs(pairs),
-           available_ids = [_ | _] <- available_ids(leased_ids, exps, now) do
+      with {:ok, pairs} <- Redix.command(conn, ["HGETALL", key]) do
+        {_markers, exps, leased_ids} = parse_lease_fields(pairs)
         token = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
-        available_ids |> Shared.shuffle_after_3() |> claim(conn, key, token, ttl, now + ttl)
-      else
-        [] -> {:error, :exhausted}
-        error -> error
+
+        leased_ids |> available_ids(exps, now) |> claim(conn, key, token, ttl, now + ttl)
       end
     end
 
-    defp claim([], _, _, _, _, _), do: {:error, :conflict}
+    defp claim([], _, _, _, _, _), do: {:error, :exhausted}
 
-    defp claim([id | tail], conn, key, token, ttl, local_expiry) do
-      case update_lease(conn, key, {id, token}, ttl, :if_none_exist, local_expiry) do
-        :ok -> {:ok, id, {id, token}, ttl}
-        {:error, :condition_not_met} -> claim(tail, conn, key, token, ttl, local_expiry)
-        {:error, _reason} = error -> error
-      end
+    defp claim(ids, conn, key, token, ttl, local_exp) do
+      ids
+      |> Shared.lazy_shuffle_after_3()
+      |> Enum.find_value({:error, :conflict}, fn id ->
+        case update_lease(conn, key, {id, token}, ttl, :if_none_exist, local_exp) do
+          :ok -> {:ok, id, {id, token}, ttl}
+          {:error, :condition_not_met} -> false
+          {:error, _reason} = error -> error
+        end
+      end)
     end
 
     @impl true

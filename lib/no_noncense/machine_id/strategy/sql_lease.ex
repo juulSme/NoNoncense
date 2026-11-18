@@ -104,28 +104,28 @@ if Code.ensure_loaded?(Ecto.Migration) do
         select: [:id, :lock_version]
       )
       |> repo.all()
-      |> Shared.shuffle_after_3()
-      |> case do
-        [] -> {:error, :exhausted}
-        available -> claim(available, repo, table, token, ttl, local_expiry)
-      end
+      |> claim(repo, table, token, ttl, local_expiry)
     end
 
-    defp claim([], _, _, _, _, _), do: {:error, :conflict}
+    defp claim([], _, _, _, _, _), do: {:error, :exhausted}
 
-    defp claim([%{id: id, lock_version: lock_version} | rest], repo, table, token, ttl, exp) do
-      from(l in {table, NoNoncenseLease},
-        where: l.id == ^id and l.lock_version == ^lock_version,
-        update: [
-          set: [token: ^token, expires_at: greatest(db_now_add(^ttl), ^exp)],
-          inc: [lock_version: 1]
-        ]
-      )
-      |> repo.update_all([])
-      |> case do
-        {1, _} -> {:ok, id, {id, token}, ttl}
-        _ -> claim(rest, repo, table, token, ttl, exp)
-      end
+    defp claim(rows, repo, table, token, ttl, local_exp) do
+      rows
+      |> Shared.lazy_shuffle_after_3()
+      |> Enum.find_value({:error, :conflict}, fn %{id: id, lock_version: lock_version} ->
+        from(l in {table, NoNoncenseLease},
+          where: l.id == ^id and l.lock_version == ^lock_version,
+          update: [
+            set: [token: ^token, expires_at: greatest(db_now_add(^ttl), ^local_exp)],
+            inc: [lock_version: 1]
+          ]
+        )
+        |> repo.update_all([])
+        |> case do
+          {1, _} -> {:ok, id, {id, token}, ttl}
+          _ -> false
+        end
+      end)
     end
 
     @impl true
