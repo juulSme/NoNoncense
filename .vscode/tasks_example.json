@@ -52,6 +52,14 @@
       "runOptions": {
         "reevaluateOnRerun": false
       }
+    },
+    {
+      "label": "Start Tidewave",
+      "type": "shell",
+      "command": "mix tidewave",
+      "isBackground": true,
+      "problemMatcher": [],
+      "runOptions": { "runOn": "folderOpen" }
     }
   ]
 }
