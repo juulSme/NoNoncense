@@ -45,12 +45,14 @@ if Code.ensure_loaded?(Redix) do
 
       * `:key` - the Redis hash key to store leases under (default `"no_noncense_leases"`)
 
-    ## Requirements
+    ## Operational requirements and recommendations
 
     - Redis 8+ or Valkey 9+.
-    - Command permissions for `HGETALL`, `HSETEX`, `HSETNX`, `MULTI`, `EXEC` (or no ACL restrictions).
+    - Command permissions for `HGETALL`, `HSETEX`, `HSETNX`, `MULTI`, `EXEC` (or no ACL restrictions). The implementation does not use Lua scripts or Redis functions.
     - Don't use an `allkeys-*` [eviction policy](https://redis.io/docs/latest/develop/reference/eviction/) to avoid the leases hash being evicted under memory pressure.
-    - Use standalone Redis or Sentinel-managed Redis. Note that lost writes during asynchronous failover can result in duplicate IDs.
+    - Preferably use a single instance, even consider a dedicated one. The implementation is tolerant of downtime because of the long lease durations but requires consistency.
+    - Enable persistence using the [append-only file](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/#append-only-file), preferably with `appendfsync always`.
+    - Restoring an old backup can roll back lease and expiry records. Stop all nonce generators before restoring, then wait until the clocks of restarting nodes are known to be later than any timestamp previously generated with the affected IDs.
     """
 
     # Implementation notes: each lease writes two TTL'd fields to the hash via a single `HSETEX`:

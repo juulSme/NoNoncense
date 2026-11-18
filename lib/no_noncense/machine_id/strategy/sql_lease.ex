@@ -41,6 +41,13 @@ if Code.ensure_loaded?(Ecto.Migration) do
           def change, do: NoNoncense.MachineId.Strategy.SqlLease.migrate()
         end
 
+    ## Operational requirements and recommendations
+
+    - PostgreSQL or MySQL, with the migration above applied and all 512 lease rows intact.
+    - The runtime database user needs `SELECT` and `UPDATE` permissions on the leases table. Running the migration also requires permissions to create and populate it.
+    - Use UTC for database sessions: lease expiry values are UTC and are compared against the database's `CURRENT_TIMESTAMP`.
+    - Route all lease operations to the same writable primary, not a read replica. A single instance avoids the risk of losing acknowledged lease updates during asynchronous failover. Existing holders tolerate database downtime until their local leases expire, but lost or rolled-back lease updates can cause duplicate nonces.
+    - Restoring an old backup can roll back lease and expiry records. Stop all nonce generators before restoring, then wait until the clocks of restarting nodes are known to be later than any timestamp previously generated with the affected IDs.
     """
 
     # Implementation notes:
