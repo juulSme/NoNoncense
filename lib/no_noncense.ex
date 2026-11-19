@@ -447,11 +447,16 @@ defmodule NoNoncense do
   Get the timestamp of the nonce as a `DateTime`, given the epoch of the instance.
   This should only be used for `sortable_nonce/2` nonces.
 
+  This function reconstructs the epoch using the current time offset, so its result
+  can change if the time offset changes after the instance is initialized. Use
+  `created_at/2` with the epoch used to generate the nonce instead.
+
   ## Examples
 
       iex> NoNoncense.get_datetime(<<0, 15, 27, 213, 143, 128, 0, 0>>)
       ~U[2025-01-12 17:38:49.534Z]
   """
+  @deprecated "Use created_at/2 with the epoch used to generate the nonce"
   @spec get_datetime(atom(), nonce()) :: DateTime.t()
   def get_datetime(name \\ __MODULE__, nonce) do
     state(mono_epoch_offset: mono_epoch_offset) = fetch_config(name)
@@ -459,6 +464,38 @@ defmodule NoNoncense do
     epoch = :erlang.time_offset(:millisecond) - mono_epoch_offset
     timestamp = timestamp + epoch
     DateTime.from_unix!(timestamp, :millisecond)
+  end
+
+  @doc """
+  Get the timestamp that a nonce was created at as a `DateTime`.
+
+  `epoch` is the epoch used to generate the nonce, as a `DateTime` or an integer
+  in milliseconds since the Unix epoch. It defaults to the NoNoncense epoch
+  2025-01-01 00:00:00 UTC.
+  No initialized instance is needed.
+  This function only returns meaningful results for `sortable_nonce/2` nonces.
+
+  ## Examples
+
+      iex> NoNoncense.created_at(<<0, 15, 27, 213, 143, 128, 0, 0>>)
+      ~U[2025-01-12 17:38:49.534Z]
+
+      # pass the original epoch for a nonce generated with a custom epoch
+      iex> nonce = <<0, 15, 27, 213, 143, 128, 0, 0>>
+      iex> NoNoncense.created_at(nonce, 1_577_836_800_000)
+      ~U[2020-01-12 17:38:49.534Z]
+      iex> NoNoncense.created_at(nonce, ~U[2020-01-01 00:00:00.123Z])
+      ~U[2020-01-12 17:38:49.657Z]
+  """
+  @spec created_at(nonce(), integer() | DateTime.t()) :: DateTime.t()
+  def created_at(nonce, epoch \\ @no_noncense_epoch)
+
+  def created_at(<<timestamp::@ts_bits, _::bits>>, epoch) when is_integer(epoch) do
+    DateTime.from_unix!(timestamp + epoch, :millisecond)
+  end
+
+  def created_at(nonce, %DateTime{} = epoch) do
+    created_at(nonce, DateTime.to_unix(epoch, :millisecond))
   end
 
   ###########

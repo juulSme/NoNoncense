@@ -5,7 +5,7 @@ defmodule NoNoncense.MachineId.Strategy.Shared do
   Keep the first three elements in order, and shuffle the rest lazily.
   Returns a stream of elements; the shuffling happens when the fourth element is accessed.
   Used to attempt in-order acquisition of IDs, but with reduced raciness in high-contention situations.
-  Passes through lists of 3 or less elements.
+  Passes through lists of 4 or less elements.
 
   ## Examples
 

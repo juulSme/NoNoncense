@@ -7,6 +7,8 @@ defmodule NoNoncenseTest do
   import SpeckEx.Block
   import NoNoncense.State
 
+  doctest NoNoncense, only: [created_at: 2]
+
   @name :test_nonce_factory
   @epoch System.system_time(:millisecond)
 
@@ -486,8 +488,49 @@ defmodule NoNoncenseTest do
 
       nonce = <<epoch_time::@ts_bits, 0::@id_bits, 0::@count_bits_64>>
 
-      assert NoNoncense.get_datetime(@name, nonce) ==
+      # Call dynamically to avoid a deprecation warning in this compatibility test.
+      assert apply(NoNoncense, :get_datetime, [@name, nonce]) ==
                DateTime.from_unix!(wall_clock_time, :millisecond)
+    end
+  end
+
+  describe "created_at/2" do
+    test "decodes sortable nonce timestamps using the default epoch without an instance" do
+      for size <- [64, 96, 128] do
+        nonce = <<12_345::@ts_bits, 0::size(size - @ts_bits)>>
+
+        assert NoNoncense.created_at(nonce) ==
+                 DateTime.from_unix!(@no_noncense_epoch + 12_345, :millisecond)
+      end
+    end
+
+    test "uses the supplied epoch rather than the factory's epoch or time offset" do
+      NoNoncense.init(
+        machine_id: 0,
+        name: @name,
+        epoch: @epoch,
+        time_offset: System.time_offset(:millisecond) + 60_000
+      )
+
+      nonce = <<12_345::@ts_bits, 0::size(64 - @ts_bits)>>
+      custom_epoch = 1_609_459_200_000
+
+      assert NoNoncense.created_at(nonce, custom_epoch) ==
+               DateTime.from_unix!(custom_epoch + 12_345, :millisecond)
+    end
+
+    test "accepts a DateTime epoch with millisecond precision" do
+      nonce = <<12_345::@ts_bits, 0::size(64 - @ts_bits)>>
+
+      assert NoNoncense.created_at(nonce, ~U[2020-01-01 00:00:00.123Z]) ==
+               ~U[2020-01-01 00:00:12.468Z]
+    end
+
+    test "accepts an epoch before the Unix epoch" do
+      nonce = <<12_345::@ts_bits, 0::size(64 - @ts_bits)>>
+
+      assert NoNoncense.created_at(nonce, -31_536_000_000) ==
+               ~U[1969-01-01 00:00:12.345Z]
     end
   end
 
