@@ -55,6 +55,35 @@ defmodule NoNoncenseTest do
       assert NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch) == :ok
     end
 
+    test "initializes with a millisecond-precision DateTime epoch" do
+      name = :datetime_epoch_test
+      epoch = ~U[2020-01-01 00:00:00.123456Z]
+      epoch_ms = 1_577_836_800_123
+      time_offset = System.time_offset(:millisecond)
+
+      assert :ok = NoNoncense.init(machine_id: 0, name: name, epoch: epoch)
+      assert state(mono_epoch_offset: offset) = :persistent_term.get(name)
+      assert offset == time_offset - epoch_ms
+
+      before = :erlang.monotonic_time(:millisecond) + time_offset
+      nonce = NoNoncense.sortable_nonce(name, 64)
+      after_generation = :erlang.monotonic_time(:millisecond) + time_offset
+      timestamp = nonce |> NoNoncense.created_at(epoch) |> DateTime.to_unix(:millisecond)
+
+      assert timestamp >= before
+      assert timestamp <= after_generation
+    end
+
+    test "initializes with a DateTime epoch before the Unix epoch" do
+      name = :pre_unix_datetime_epoch_test
+      epoch = ~U[1969-01-01 00:00:00.123Z]
+      time_offset = System.time_offset(:millisecond)
+
+      assert :ok = NoNoncense.init(machine_id: 0, name: name, epoch: epoch)
+      assert state(mono_epoch_offset: offset) = :persistent_term.get(name)
+      assert offset == time_offset - DateTime.to_unix(epoch, :millisecond)
+    end
+
     test "initializes the sortable counter with the timestamp in its high-order bits" do
       NoNoncense.init(machine_id: 0, name: @name, epoch: @epoch)
 

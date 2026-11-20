@@ -174,7 +174,7 @@ defmodule NoNoncense do
   @init_opt_docs """
     * `:machine_id` (required) - machine ID of the node
     * `:name` - The name of the nonce factory (default: `NoNoncense`).
-    * `:epoch` - Override the configured epoch for this factory instance. Defaults to the NoNoncense epoch (2025-01-01 00:00:00Z).
+    * `:epoch` - Override the epoch with a `DateTime` or an integer in milliseconds since the Unix epoch. `DateTime` values are truncated to milliseconds. Defaults to the NoNoncense epoch (2025-01-01 00:00:00Z).
     * `:base_key` - A key of at least 256 bits (32 bytes) used to derive encryption keys for all nonce sizes.
     * `:key64` - Override the derived key for 64-bit nonces.
     * `:key96` - Override the derived key for 96-bit nonces.
@@ -189,7 +189,7 @@ defmodule NoNoncense do
 
   @typedoc @init_opt_docs
   @type init_opt ::
-          {:epoch, non_neg_integer()}
+          {:epoch, integer() | DateTime.t()}
           | {:name, atom()}
           | {:machine_id, non_neg_integer()}
           | {:base_key, binary()}
@@ -217,11 +217,20 @@ defmodule NoNoncense do
 
       iex> NoNoncense.init(machine_id: 1, name: :custom, epoch: 1609459200000)
       :ok
+
+      iex> NoNoncense.init(machine_id: 1, name: :custom, epoch: ~U[2020-01-01 00:00:00.123Z])
+      :ok
   """
   @spec init([init_opt()]) :: :ok
   def init(opts \\ []) do
     name = opts[:name] || __MODULE__
-    epoch = opts[:epoch] || @no_noncense_epoch
+
+    epoch =
+      case opts[:epoch] || @no_noncense_epoch do
+        %DateTime{} = datetime -> DateTime.to_unix(datetime, :millisecond)
+        epoch when is_integer(epoch) -> epoch
+      end
+
     machine_id = Keyword.fetch!(opts, :machine_id)
 
     # check machine ID
@@ -470,7 +479,8 @@ defmodule NoNoncense do
   Get the timestamp that a nonce was created at as a `DateTime`.
 
   `epoch` is the epoch used to generate the nonce, as a `DateTime` or an integer
-  in milliseconds since the Unix epoch. It defaults to the NoNoncense epoch
+  in milliseconds since the Unix epoch. `DateTime` values are truncated to
+  milliseconds. It defaults to the NoNoncense epoch
   2025-01-01 00:00:00 UTC.
   No initialized instance is needed.
   This function only returns meaningful results for `sortable_nonce/2` nonces.
