@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0]
+
+- Add `NoNoncense.created_at/2` to extract a sortable nonce's creation time without an initialized instance. Pass the original epoch for nonces generated with a custom epoch.
+- Deprecate `NoNoncense.get_datetime/2` in favor of `created_at/2`; its result can change if the system time offset changes after initialization.
+- Accept `DateTime` values as well as Unix milliseconds for the `:epoch` initialization option and `created_at/2`; `DateTime` values are truncated to milliseconds.
+- Increase the `SqlLease` and `RedisLease` quarantine for released IDs from one to three seconds.
+- Shuffle lease acquisition candidates lazily after the first three, avoiding unnecessary shuffling when an early candidate succeeds.
+- Document operational requirements and recommendations for SQL and Redis lease strategies.
+
 ## [2.2.0]
 
 - Reject strategy-provided machine IDs outside `0..511`; an invalid ID fails startup immediately.
