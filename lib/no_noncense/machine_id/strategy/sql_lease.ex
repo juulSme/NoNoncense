@@ -189,9 +189,11 @@ if Code.ensure_loaded?(Ecto.Migration) do
       import Ecto.Migration
 
       table_name = opts[:table_name] || @default_table_name
+      # results in bytea on postgres, varbinary(16) on mysql (instead of blob)
+      token_opts = if repo().__adapter__() == Ecto.Adapters.MyXQL, do: [size: 16], else: []
 
       create table(table_name, primary_key: [name: :id, type: :smallint]) do
-        add(:token, :binary, length: 16)
+        add(:token, :binary, token_opts)
         add(:expires_at, :utc_datetime_usec, null: false)
         add(:lock_version, :integer, null: false, default: 0)
       end
