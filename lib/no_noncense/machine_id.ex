@@ -136,6 +136,7 @@ defmodule NoNoncense.MachineId do
       |> Enum.map(fn instance ->
         instance |> Keyword.put(:time_offset, time_offset) |> Keyword.put_new(:name, NoNoncense)
       end)
+      |> tap(&verify_instance_names_uniq!/1)
 
     # LeaseStore
     store_name = Module.concat(name, :LeaseStore)
@@ -180,5 +181,18 @@ defmodule NoNoncense.MachineId do
   @doc false
   def renew_now(name \\ __MODULE__) do
     Module.concat(name, :LeaseManager) |> GenServer.cast(:renew)
+  end
+
+  defp verify_instance_names_uniq!(instances) do
+    n = length(instances)
+
+    instances
+    |> Enum.map(& &1[:name])
+    |> Enum.uniq()
+    |> length()
+    |> case do
+      ^n -> :ok
+      _ -> raise(ArgumentError, "instance names must be unique")
+    end
   end
 end

@@ -156,6 +156,19 @@ defmodule NoNoncense.MachineIdTest do
       assert <<_::64>> = NoNoncense.nonce(db_name, 64)
       assert <<_::64>> = NoNoncense.nonce(iv_name, 64)
     end
+
+    test "fails startup when instance names are not unique" do
+      for instances <- [[[name: :dup], [name: :dup]], [[], []]] do
+        assert {:error, {{%ArgumentError{message: "instance names must be unique"}, _stack}, _}} =
+                 start_supervised(
+                   {NoNoncense.MachineId,
+                    name: unique_name("sup"),
+                    strategy: FakeStrategy,
+                    enable_conflict_guard?: false,
+                    instances: instances}
+                 )
+      end
+    end
   end
 
   describe "conflict guard" do
