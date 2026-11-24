@@ -45,7 +45,6 @@ if Code.ensure_loaded?(Ecto.Migration) do
 
     - PostgreSQL or MySQL, with the migration above applied and all 512 lease rows intact.
     - The runtime database user needs `SELECT` and `UPDATE` permissions on the leases table. Running the migration also requires permissions to create and populate it.
-    - Use UTC for database sessions: lease expiry values are UTC and are compared against the database's `CURRENT_TIMESTAMP`.
     - Route all lease operations to the same writable primary, not a read replica. A single instance avoids the risk of losing acknowledged lease updates during asynchronous failover. Existing holders tolerate database downtime until their local leases expire, but lost or rolled-back lease updates can cause duplicate nonces.
     - Restoring an old backup can roll back lease and expiry records. Stop all nonce generators before restoring, then wait until the clocks of restarting nodes are known to be later than any timestamp previously generated with the affected IDs.
     """
@@ -71,7 +70,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
     #     response is lost (ambiguous failure), a caller retrying with its last-known lease would
     #     find `lock_version` already stale and get a false `{:error, :lost, _}` even though nobody
     #     else took the lease. Matching on `token` only makes such retries idempotent instead.
-    #   * `db_now/0` reads `CURRENT_TIMESTAMP`, which Postgres pins to transaction start (unlike
+    #   * `db_now/1` reads `CURRENT_TIMESTAMP`, which Postgres pins to transaction start (unlike
     #     MySQL, which re-evaluates it per statement). Callers that wrap `acquire/renew/release` in
     #     an explicit transaction on Postgres will see `db_now()` "frozen", so e.g. a row released
     #     via `db_now()` won't look expired to a later `acquire/2` call in that same transaction.
@@ -89,14 +88,27 @@ if Code.ensure_loaded?(Ecto.Migration) do
     @default_table_name "no_noncense_leases"
 
     # The DB clock is one of the two clocks that must pass the reuse cutoff.
-    defmacrop db_now(), do: quote(do: fragment("CURRENT_TIMESTAMP(6)"))
+    defp db_now(repo) do
+      case repo.__adapter__() do
+        Ecto.Adapters.MyXQL ->
+          dynamic([], fragment("UTC_TIMESTAMP(6)"))
 
-    defmacrop db_now_add(duration_ms) do
-      quote do: datetime_add(db_now(), unquote(duration_ms), "millisecond")
+        Ecto.Adapters.Postgres ->
+          dynamic([], fragment("(CURRENT_TIMESTAMP(6) AT TIME ZONE 'UTC')"))
+
+        adapter ->
+          raise ArgumentError, "unsupported SQL lease adapter: #{inspect(adapter)}"
+      end
     end
 
     defmacrop greatest(a, b) do
       quote do: fragment("GREATEST(?, ?)", unquote(a), unquote(b))
+    end
+
+    # takes the latest of expiry according to db and according to this node
+    defp expiry(repo, ttl, local_expiry) do
+      now = db_now(repo)
+      dynamic([], greatest(datetime_add(^now, ^ttl, "millisecond"), ^local_expiry))
     end
 
     @impl true
@@ -106,7 +118,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
       local_expiry = calc_local_exp(ttl, opts)
 
       from(l in {table, NoNoncenseLease},
-        where: l.expires_at < db_now() and l.expires_at < ^Shared.now(opts),
+        where: ^dynamic([l], l.expires_at < ^db_now(repo) and l.expires_at < ^Shared.now(opts)),
         order_by: l.id,
         select: [:id, :lock_version]
       )
@@ -123,7 +135,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
         from(l in {table, NoNoncenseLease},
           where: l.id == ^id and l.lock_version == ^lock_version,
           update: [
-            set: [token: ^token, expires_at: greatest(db_now_add(^ttl), ^local_exp)],
+            set: [token: ^token, expires_at: ^expiry(repo, ttl, local_exp)],
             inc: [lock_version: 1]
           ]
         )
@@ -143,7 +155,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.token == ^token,
         update: [
-          set: [expires_at: greatest(db_now_add(^ttl), ^local_expiry)],
+          set: [expires_at: ^expiry(repo, ttl, local_expiry)],
           inc: [lock_version: 1]
         ]
       )
@@ -162,7 +174,7 @@ if Code.ensure_loaded?(Ecto.Migration) do
       from(l in {table, NoNoncenseLease},
         where: l.id == ^id and l.token == ^token,
         update: [
-          set: [token: nil, expires_at: greatest(db_now_add(^@quarantine_ttl), ^local_expiry)],
+          set: [token: nil, expires_at: ^expiry(repo, @quarantine_ttl, local_expiry)],
           inc: [lock_version: 1]
         ]
       )

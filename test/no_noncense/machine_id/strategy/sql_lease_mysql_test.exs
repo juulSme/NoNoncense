@@ -9,6 +9,61 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
 
   @opts [repo: MysqlRepo, time_offset: System.time_offset(:millisecond)]
 
+  test "uses UTC database time for all lease operations in a non-UTC session" do
+    %{rows: [[original_timezone]]} =
+      Ecto.Adapters.SQL.query!(MysqlRepo, "SELECT @@session.time_zone")
+
+    Ecto.Adapters.SQL.query!(MysqlRepo, "SET time_zone = '+03:00'")
+
+    try do
+      future = DateTime.add(DateTime.utc_now(), 3_600, :second)
+
+      from(l in NoNoncenseLease, where: l.id == 0)
+      |> MysqlRepo.update_all(set: [expires_at: future])
+
+      fast_opts = Keyword.put(@opts, :time_offset, :erlang.time_offset(:millisecond) + 14_400_000)
+      assert {:ok, 1, _, 10_000} = SqlLease.acquire(10_000, fast_opts)
+
+      opts = Keyword.put(@opts, :time_offset, :erlang.time_offset(:millisecond) - 14_400_000)
+      expired = DateTime.add(DateTime.utc_now(), -18_000, :second)
+
+      from(l in NoNoncenseLease, where: l.id == 0)
+      |> MysqlRepo.update_all(set: [expires_at: expired])
+
+      before_clocks = clock_times(opts)
+      assert {:ok, 0, lease, 10_000} = SqlLease.acquire(10_000, opts)
+
+      assert_expiry_between(
+        MysqlRepo.get(NoNoncenseLease, 0).expires_at,
+        before_clocks,
+        clock_times(opts),
+        10_000
+      )
+
+      before_clocks = clock_times(opts)
+      assert {:ok, ^lease, 20_000} = SqlLease.renew(lease, 20_000, opts)
+
+      assert_expiry_between(
+        MysqlRepo.get(NoNoncenseLease, 0).expires_at,
+        before_clocks,
+        clock_times(opts),
+        20_000
+      )
+
+      before_clocks = clock_times(opts)
+      assert :ok = SqlLease.release(lease, opts)
+
+      assert_expiry_between(
+        MysqlRepo.get(NoNoncenseLease, 0).expires_at,
+        before_clocks,
+        clock_times(opts),
+        3_000
+      )
+    after
+      Ecto.Adapters.SQL.query!(MysqlRepo, "SET time_zone = ?", [original_timezone])
+    end
+  end
+
   describe "acquire/2" do
     test "acquires the lowest available id" do
       assert {:ok, 0, {0, token}, 10_000} = SqlLease.acquire(10_000, @opts)
@@ -309,7 +364,7 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
       MysqlRepo.one(
         from(l in NoNoncenseLease,
           limit: 1,
-          select: type(fragment("CURRENT_TIMESTAMP(6)"), :utc_datetime_usec)
+          select: type(fragment("UTC_TIMESTAMP(6)"), :utc_datetime_usec)
         )
       )
 
@@ -319,7 +374,10 @@ defmodule NoNoncense.MachineId.Strategy.SqlLeaseMysqlTest do
   defp assert_expiry_between(expiry, before_clocks, after_clocks, ttl) do
     earliest = Enum.max(before_clocks, DateTime) |> DateTime.add(ttl, :millisecond)
     latest = Enum.max(after_clocks, DateTime) |> DateTime.add(ttl, :millisecond)
-    assert DateTime.compare(expiry, earliest) != :lt
+
+    assert DateTime.compare(expiry, earliest) != :lt,
+           "expiry #{inspect(expiry)} is before #{inspect(earliest)}"
+
     assert DateTime.compare(expiry, latest) != :gt
   end
 end
