@@ -3,7 +3,12 @@ defmodule NoNoncense.MachineId.LeaseManager do
     * `:strategy` (required) - a module implementing the `NoNoncense.MachineId.Strategy` behaviour
     * `:strategy_opts` - passed as-is to the strategy's callbacks (default `[]`)
     * `:lease_duration` - the duration, in ms, to request from the strategy on every
-      `acquire`/`renew` call (the strategy may grant a different actual duration; default 8 hours)
+      `acquire`/`renew` call (minimum `60_000`; the strategy may grant a different actual
+      duration; default 8 hours).
+      A young lease manager requests shorter durations, see `:lease_duration_ramp`
+    * `:lease_duration_ramp` - list of durations, in ms (each at least `60_000`), requested by the
+      first successful `acquire`/`renew` calls (default `[120_000, 600_000]`); pass `[]` to disable
+      the ramp
     * `:renew_interval` - how often to renew, in ms; should be comfortably shorter than the
       lease's actual TTL to allow for retries (default 30 minutes)
     * `:acquire_timeout` - max total time, in ms, to keep retrying acquisition at boot before giving up
@@ -22,6 +27,14 @@ defmodule NoNoncense.MachineId.LeaseManager do
   ID generation, will grind to a halt if generation stops, so favor conservative, generous
   durations over aggressive, short ones. Machine IDs are meant to stay static for the lifetime
   of the node, so there's little to be gained from renewing more aggressively.
+
+  A node that crashes leaves its lease behind until it expires. To keep a crash-looping node from
+  stranding IDs for hours, the lease manager requests shorter leases at first. The ramp is a list
+  of durations that are used one per successful acquire or renew, after which `:lease_duration`
+  is requested. By default the lease manager requests 2 minutes, then 10 minutes, then
+  `:lease_duration`. Steps longer than `:lease_duration` are ignored. Failed attempts do not advance
+  the ramp, and a reacquisition after a lease loss continues where the ramp left off. The flip
+  side is that a young node tolerates a coordinator outage of only a couple of minutes.
   """
   @options_docs """
     * `:name` - registered name (default `#{inspect(__MODULE__)}`)
@@ -70,17 +83,22 @@ defmodule NoNoncense.MachineId.LeaseManager do
           | {:lease_store, GenServer.name()}
           | {:task_supervisor, GenServer.server()}
 
+  @min_requested_lease_duration 60_000
+
   @default_state %{
     name: __MODULE__,
     strategy: nil,
     strategy_opts: [],
     lease_duration: 8 * 60 * 60 * 1000,
+    lease_duration_ramp: [2 * 60 * 1000, 10 * 60 * 1000],
     renew_interval: 30 * 60 * 1000,
     acquire_timeout: 60 * 1000,
     callback_timeout: 5_000,
     task_supervisor: nil,
     lease_store: nil,
     on_lease_lost: nil,
+    # Number of successful acquire/renew calls so far; indexes into the lease duration ramp
+    grants: 0,
     # Failures in a row during the current outage; sets the backoff, reset on success or loss
     attempt: 1,
     # {:renew | :acquire, ref} of the single pending timer
@@ -108,6 +126,22 @@ defmodule NoNoncense.MachineId.LeaseManager do
     end
 
     opts = Enum.into(opts, @default_state)
+    ramp = opts.lease_duration_ramp
+
+    unless is_integer(opts.lease_duration) and
+             opts.lease_duration >= @min_requested_lease_duration do
+      raise ArgumentError, ":lease_duration must be an integer of at least 60_000 milliseconds"
+    end
+
+    unless is_list(ramp) and
+             Enum.all?(ramp, &(is_integer(&1) and &1 >= @min_requested_lease_duration)) do
+      raise ArgumentError,
+            ":lease_duration_ramp must be a list of integers of at least 60_000 milliseconds"
+    end
+
+    ramp = ramp |> Enum.filter(&(&1 <= opts.lease_duration)) |> Enum.sort()
+
+    opts = %{opts | lease_duration_ramp: ramp}
     # init/1 blocks while acquiring; the default 5s GenServer init timeout must not apply
     GenServer.start_link(__MODULE__, opts, name: opts.name, timeout: :infinity)
   end
@@ -246,7 +280,7 @@ defmodule NoNoncense.MachineId.LeaseManager do
   defp schedule_renew(state, lease) do
     until_expiry = min(state.renew_interval, LeaseStore.remaining_ms(lease))
     delay = max(0, until_expiry - @lease_safety_margin)
-    state |> set_timer(:renew, delay) |> Map.put(:attempt, 1)
+    state |> set_timer(:renew, delay) |> Map.merge(%{attempt: 1, grants: state.grants + 1})
   end
 
   # At most one timer is pending; setting a new one cancels the old.

@@ -10,10 +10,6 @@ defmodule NoNoncense do
 
   Locally unique means that the nonces are unique within your application/database/domain, as opposed to globally unique nonces (like UUIDs) which are unique across *all* applications and domains.
 
-  > #### Read the migration guide {: .warning}
-  >
-  > If you're upgrading from v0.x.x and you use encrypted nonces, please read the [Migration Guide](MIGRATION.md) carefully - there are breaking changes that require attention to preserve uniqueness guarantees.
-
   ## Usage
 
   Add `NoNoncense.MachineId` to your supervision tree. It acquires and renews a unique machine ID

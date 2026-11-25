@@ -96,6 +96,7 @@ defmodule NoNoncense.MachineId do
           {:strategy, module()}
           | {:strategy_opts, keyword()}
           | {:lease_duration, pos_integer()}
+          | {:lease_duration_ramp, [pos_integer()]}
           | {:renew_interval, pos_integer()}
           | {:acquire_timeout, pos_integer() | :infinity}
           | {:callback_timeout, pos_integer()}

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [unreleased]
+
+- To protect against crashloops causing machine ID exhaustion, request shorter leases from a young lease manager: 2 minutes on the first acquisition, 10 minutes on the next renewal, then `:lease_duration` (steps longer than it are ignored). Customize the steps with `:lease_duration_ramp`, or disable the ramp with `lease_duration_ramp: []`. A node that crashes shortly after startup now strands its machine ID for minutes instead of hours.
+- Require requested lease durations and ramp steps to be at least one minute.
+- Use UTC database timestamps for `SqlLease` operations regardless of the database session's time zone.
+- Fix the `SqlLease` migration to create a 16-byte binary token column on MySQL.
+- Reject duplicate nonce factory instance names when starting a `NoNoncense.MachineId` supervisor, including duplicate default names.
+
 ## [2.3.0]
 
 - Add `NoNoncense.created_at/2` to extract a sortable nonce's creation time without an initialized instance. Pass the original epoch for nonces generated with a custom epoch.

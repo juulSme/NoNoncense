@@ -14,14 +14,16 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
     end
 
     @impl true
-    def acquire(_lease_duration, opts) do
+    def acquire(lease_duration, opts) do
+      if pid = opts[:notify_duration], do: send(pid, {:requested, :acquire, lease_duration})
       result = opts[:agent] |> pop(:acquire) |> resolve(:acquire, opts)
       if pid = opts[:notify], do: send(pid, {:acquire, result})
       result
     end
 
     @impl true
-    def renew(_lease, _lease_duration, opts) do
+    def renew(_lease, lease_duration, opts) do
+      if pid = opts[:notify_duration], do: send(pid, {:requested, :renew, lease_duration})
       result = opts[:agent] |> pop(:renew) |> resolve(:renew, opts)
       if pid = opts[:notify], do: send(pid, {:renew, result})
       result
@@ -1303,6 +1305,183 @@ defmodule NoNoncense.MachineId.LeaseManagerTest do
         assert_receive {:release_blocked, :lease2, replacement_release_pid}
         send(replacement_release_pid, {:resume_release, :lease2})
         assert :ok = Task.await(stop_task)
+      end)
+    end
+  end
+
+  describe "lease duration ramp" do
+    test "requests 2 minutes, then 10 minutes, then lease_duration" do
+      {:ok, agent} =
+        FakeStrategy.start_agent(
+          [{:ok, 3, :lease, 600_000}],
+          List.duplicate({:ok, :lease, 600_000}, 4)
+        )
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify_duration: self()],
+          lease_duration: 8 * 3_600_000
+        )
+
+      assert_receive {:requested, :acquire, 120_000}
+
+      renew(name)
+      assert_receive {:requested, :renew, 600_000}
+
+      renew(name)
+      assert_receive {:requested, :renew, 28_800_000}
+
+      renew(name)
+      assert_receive {:requested, :renew, 28_800_000}
+    end
+
+    test "ignores steps longer than lease_duration" do
+      {:ok, agent} =
+        FakeStrategy.start_agent([{:ok, 3, :lease, 600_000}], [{:ok, :lease, 600_000}])
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify_duration: self()],
+          lease_duration: 60_000
+        )
+
+      assert_receive {:requested, :acquire, 60_000}
+      renew(name)
+      assert_receive {:requested, :renew, 60_000}
+    end
+
+    test "uses custom steps in order, ignoring those longer than lease_duration" do
+      {:ok, agent} =
+        FakeStrategy.start_agent(
+          [{:ok, 3, :lease, 600_000}],
+          List.duplicate({:ok, :lease, 600_000}, 3)
+        )
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify_duration: self()],
+          lease_duration: 200_000,
+          lease_duration_ramp: [60_000, 300_000]
+        )
+
+      assert_receive {:requested, :acquire, 60_000}
+      renew(name)
+      assert_receive {:requested, :renew, 200_000}
+      renew(name)
+      assert_receive {:requested, :renew, 200_000}
+    end
+
+    test "failed attempts do not advance the ramp" do
+      {:ok, agent} =
+        FakeStrategy.start_agent(
+          [{:ok, 3, :lease, 600_000}],
+          [{:error, :retry, :down}, {:ok, :lease, 600_000}, {:ok, :lease, 600_000}]
+        )
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify_duration: self()],
+          lease_duration: 8 * 3_600_000
+        )
+
+      assert_receive {:requested, :acquire, 120_000}
+
+      capture_log(fn ->
+        renew(name)
+        assert_receive {:requested, :renew, 600_000}
+        # the failure has been handled and the retry timer is set
+        :sys.get_state(name)
+        renew(name)
+        assert_receive {:requested, :renew, 600_000}
+        :sys.get_state(name)
+      end)
+
+      renew(name)
+      assert_receive {:requested, :renew, 28_800_000}
+    end
+
+    test "an empty ramp disables it" do
+      {:ok, agent} =
+        FakeStrategy.start_agent([{:ok, 3, :lease, 600_000}], [{:ok, :lease, 600_000}])
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify_duration: self()],
+          lease_duration: 8 * 3_600_000,
+          lease_duration_ramp: []
+        )
+
+      assert_receive {:requested, :acquire, 28_800_000}
+      renew(name)
+      assert_receive {:requested, :renew, 28_800_000}
+    end
+
+    test "rejects invalid breakpoints before starting" do
+      for ramp <- [
+            nil,
+            false,
+            120_000,
+            [0],
+            [-1],
+            [59_999],
+            [60_000, 59_999],
+            [60_000.0],
+            [:invalid]
+          ] do
+        assert_raise ArgumentError,
+                     ":lease_duration_ramp must be a list of integers of at least 60_000 milliseconds",
+                     fn ->
+                       LeaseManager.start_link(
+                         strategy: FakeStrategy,
+                         lease_store: :unused,
+                         task_supervisor: :unused,
+                         lease_duration_ramp: ramp
+                       )
+                     end
+      end
+    end
+
+    test "rejects invalid lease durations before starting" do
+      for duration <- [nil, false, -1, 59_999, 60_000.0] do
+        assert_raise ArgumentError,
+                     ":lease_duration must be an integer of at least 60_000 milliseconds",
+                     fn ->
+                       LeaseManager.start_link(
+                         strategy: FakeStrategy,
+                         lease_store: :unused,
+                         task_supervisor: :unused,
+                         lease_duration: duration,
+                         lease_duration_ramp: []
+                       )
+                     end
+      end
+    end
+
+    test "continues the ramp when reacquiring after a lease loss" do
+      {:ok, agent} =
+        FakeStrategy.start_agent(
+          [{:ok, 3, :lease1, 600_000}, {:ok, 4, :lease2, 600_000}],
+          []
+        )
+
+      name =
+        start_lease_manager!(
+          strategy: FakeStrategy,
+          strategy_opts: [agent: agent, notify_duration: self()],
+          lease_duration: 8 * 3_600_000
+        )
+
+      assert_receive {:requested, :acquire, 120_000}
+
+      capture_log(fn ->
+        assert :ok = LeaseStore.lose(store_name(name), :external)
+        assert_receive {:requested, :acquire, 600_000}
+        assert_receive {:lease_lost, :external}
       end)
     end
   end

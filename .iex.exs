@@ -17,7 +17,12 @@ end
   )
 
 secret_key = :crypto.strong_rand_bytes(32)
-shared_opts = [lease_duration: 60 * 60 * 1000, renew_interval: 30 * 60 * 1000]
+
+shared_opts = [
+  lease_duration: 60 * 60 * 1000,
+  renew_interval: 30 * 60 * 1000,
+  lease_duration_ramp: for(n <- 0..4, do: n * 10 * 1000 + 60 * 1000)
+]
 
 {:ok, _supervisor} =
   Supervisor.start_link(

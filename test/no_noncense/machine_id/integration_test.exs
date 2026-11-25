@@ -34,7 +34,7 @@ defmodule NoNoncense.MachineId.IntegrationTest do
       |> Keyword.put_new(:name, name)
       |> Keyword.put_new(:strategy, RedisLease)
       |> Keyword.put_new(:strategy_opts, with_connection: conn, key: key)
-      |> Keyword.put_new(:lease_duration, 40_000)
+      |> Keyword.put_new(:lease_duration, 60_000)
       |> Keyword.put_new(:renew_interval, 40_000)
       |> Keyword.put_new(:enable_conflict_guard?, false)
       |> Keyword.put_new(:on_lease_lost, fn reason -> send(test_pid, {:lease_lost, reason}) end)

@@ -36,7 +36,7 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
   """
   @spec acquire(map(), atom(), keyword()) :: result()
   def acquire(state, source, opts \\ []) do
-    fn -> state.strategy.acquire(state.lease_duration, state.strategy_opts) end
+    fn -> state.strategy.acquire(lease_duration(state), state.strategy_opts) end
     |> run(state, :acquire, source, opts[:deadline])
     |> case do
       {{:ok, machine_id, lease, ttl_ms}, started_at} ->
@@ -57,7 +57,7 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
   """
   @spec renew(map(), term(), atom(), keyword()) :: result()
   def renew(state, lease, source, opts \\ []) do
-    fn -> state.strategy.renew(lease, state.lease_duration, state.strategy_opts) end
+    fn -> state.strategy.renew(lease, lease_duration(state), state.strategy_opts) end
     |> run(state, :renew, source, opts[:deadline])
     |> case do
       {{:ok, renewed_lease, ttl_ms}, started_at} ->
@@ -79,6 +79,12 @@ defmodule NoNoncense.MachineId.LeaseManager.StrategyCall do
   @doc "Releases a lease in the background so the caller is not held up by a slow strategy."
   def release_async(state, lease) do
     Task.Supervisor.start_child(state.task_supervisor, fn -> release(state, lease, :loss) end)
+  end
+
+  # A young manager requests short leases, so a crash strands its ID for minutes, not hours. The
+  # ramp has one step per successful grant; steps longer than `:lease_duration` were dropped at start.
+  defp lease_duration(state) do
+    Enum.at(state.lease_duration_ramp, state.grants, state.lease_duration)
   end
 
   # Passes through what the store accepted. A refusal means the strategy is still holding a lease
